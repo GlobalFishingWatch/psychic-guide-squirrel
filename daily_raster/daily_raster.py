@@ -97,6 +97,7 @@ class BigQuery:
             'configuration': {
                 'query': {
                     'allowLargeResults': 'true',
+                    'writeDisposition':'WRITE_TRUNCATE', #overwrites table
                     'destinationTable' : {
                       "projectId": project_id,
                       "datasetId": dataset,
@@ -216,7 +217,6 @@ num_lons = 360 * one_over_cellsize
 
 vessel_hours = np.zeros(shape=(num_lats,num_lons))
 #vessel_hours = np.zeros(shape=(num_lats,num_lons))
-
 
 with gzip.open(path_to_csv_zip+table+".zip", 'rb') as f:
     reader = csv.DictReader(f)

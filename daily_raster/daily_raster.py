@@ -3,7 +3,7 @@ The following script creates a geotiff of vessel density for a given calendar da
 
 usage:
 
-! daily_raster yyyymmdd
+! python daily_raster.py yyyymmdd
 
 The code for downloading a table from BigQuery was written by Tim Hochberg:
 https://github.com/GlobalFishingWatch/nn-vessel-classification/blob/master/tah-proto/get-data/gctools.py

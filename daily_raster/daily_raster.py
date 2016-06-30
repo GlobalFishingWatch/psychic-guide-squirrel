@@ -238,11 +238,18 @@ profile = {
     'height': num_lats,
     'width': num_lons,
     'count': 1,
-    'driver':"GTiff",
+    'driver': "GTiff",
     'transform': affine.Affine(float(cellsize), 0, -180, 
-              0, -float(cellsize), 90)}
+                               0, -float(cellsize), 90),
+    'TILED': 'YES',
+    'BIGTIFF': 'NO',
+    'INTERLEAVE': 'BAND',
+    'COMPRESS': 'DEFLATE',
+    'PREDICTOR': '3'
+}
 
-out_tif = thedate+".tiff"
+
+out_tif = thedate+".tif"
 
 with rio.open(path_to_tiff + out_tif, 'w', **profile) as dst:
     dst.write(np.flipud(vessel_hours).astype(profile['dtype']), indexes=1)

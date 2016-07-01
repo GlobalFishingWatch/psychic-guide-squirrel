@@ -3,7 +3,7 @@ The following script creates a geotiff of vessel density for a given calendar da
 
 usage:
 
-! python daily_raster.py yyyymmdd
+! python daily_raster_fishing_effort.py yyyymmdd
 
 The code for downloading a table from BigQuery was written by Tim Hochberg:
 https://github.com/GlobalFishingWatch/nn-vessel-classification/blob/master/tah-proto/get-data/gctools.py
@@ -26,8 +26,8 @@ import affine
 thedate = sys.argv[1] # 
 
 # Change these depending on where you want things locally
-path_to_csv_zip = "../data/dailytables/all_vessels/zips/"
-path_to_tiff = "../data/dailytables/all_vessels/tiffs/"
+path_to_csv_zip = "../data/dailytables/fishing_vessel_effort/zips/"
+path_to_tiff = "../data/dailytables/fishing_vessel_effort/tiffs/"
 
 yyyy = thedate[:4]
 mm = thedate[4:6]
@@ -43,9 +43,10 @@ SELECT
 IF(next_timestamp IS NOT NULL, (next_timestamp - timestamp)/3600000000, 
   (TIMESTAMP("'''+yyyy+'-'+mm+"-"+dd+''' 23:59:59") - timestamp)/3600000000 )/2) hours
 FROM
-  [pipeline_classify_logistic_661b_bined.'''+thedate+''']
+  [pipeline_classify_logistic_661b_fishing.'''+thedate+''']
 WHERE
-  seg_id NOT IN (
+  measure_new_score > .5
+  and seg_id NOT IN (
   SELECT
     seg_id
   FROM
@@ -69,7 +70,7 @@ GROUP BY
 
 proj_id = "world-fishing-827"
 dataset = "scratch_global_fishing_raster"
-table = "all_vessels_"+thedate
+table = "fishing_effort_"+thedate
 
 class BigQuery:
 
@@ -200,7 +201,7 @@ local_path = path_to_csv_zip+table+".zip"
 
 
 import os.path
-if not os.path.isfile('../data/dailytables/all_vessels/zips/all_vessels_'+thedate+".zip"): 
+if not os.path.isfile('../data/dailytables/fishing_vessel_effort/zips/fishing_effort_'+thedate+".zip"): 
     print thedate
     bigq = BigQuery()
     query_job = bigq.async_query(proj_id, query, dataset, table)
@@ -214,7 +215,7 @@ if not os.path.isfile('../data/dailytables/all_vessels/zips/all_vessels_'+thedat
 
 # .1 degree grid
 
-if not os.path.isfile("../data/dailytables/all_vessels/tiffs/allvessels_"+yyyy+"-"+mm+"-"+dd+".tif"): 
+if not os.path.isfile("../data/dailytables/fishing_vessel_effort/tiffs/"+yyyy+"-"+mm+"-"+dd+".tif"): 
     print yyyy+"-"+mm+"-"+dd
     one_over_cellsize = 10
     cellsize = .1
@@ -255,7 +256,7 @@ if not os.path.isfile("../data/dailytables/all_vessels/tiffs/allvessels_"+yyyy+"
     }
 
 
-    out_tif = "allvessels_"+yyyy+"-"+mm+"-"+dd+".tif"
+    out_tif = yyyy+"-"+mm+"-"+dd+".tif"
 
     with rio.open(path_to_tiff + out_tif, 'w', **profile) as dst:
         dst.write(np.flipud(vessel_hours).astype(profile['dtype']), indexes=1)

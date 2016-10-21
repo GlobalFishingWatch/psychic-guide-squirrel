@@ -1,3 +1,11 @@
+# other files to ingore
+.DS_Store
+
+# Data files
+*.zip
+*.tif
+*.png
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

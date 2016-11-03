@@ -1,0 +1,70 @@
+iso3,rank,country_name,country
+CHN,1,China,China (People's Republic of)
+ESP,2,Spain,Spain
+ITA,3,Italy,Italy
+INV,4,Invalid mmsi,
+FRA,5,France,France
+GBR,6,United Kingdom,United Kingdom of Great Britain and Northern Ireland
+RUS,7,Russia,Russian Federation
+NOR,8,Norway,Norway
+TWN,9,Taiwan,Taiwan (Province of China) - China (People's Republic of)
+ISL,10,Iceland,Iceland
+USA,11,United States,United States of America
+JPN,12,Japan,Japan
+KOR,13,South Korea,Korea (Republic of)
+NLD,14,Netherlands,Netherlands (Kingdom of the)
+PRT,15,Portugal,Portugal
+DNK,16,Denmark,Denmark
+ARG,17,Argentina,Argentine Republic
+IRL,18,Republic of Ireland,Ireland
+CAN,19,Canada,Canada
+FRO,20,Faroe Islands,Faroe Islands - Denmark
+GRC,21,Greece,Greece
+DEU,22,Germany,Germany (Federal Republic of)
+BEL,23,Belgium,Belgium
+ZAF,24,South Africa,South Africa (Republic of)
+HRV,25,Croatia,Croatia (Republic of)
+TUR,26,Turkey,Turkey
+SWE,27,Sweden,Sweden
+AUS,28,Australia,Australia
+POL,29,Poland,Poland (Republic of)
+PRT,30,Portugal,Azores - Portugal
+NZL,31,New Zealand,New Zealand
+LVA,32,Latvia,Latvia (Republic of)
+VUT,33,Vanuatu,Vanuatu (Republic of)
+CHL,34,Chile,Chile
+GRL,35,Greenland,Greenland - Denmark
+URY,36,Uruguay,Uruguay (Eastern Republic of)
+FIN,37,Finland,Finland
+MYS,38,Malaysia,Malaysia
+LTU,39,Lithuania,Lithuania (Republic of)
+FJI,40,Fiji,Fiji (Republic of)
+NCL,41,New Caledonia,New Caledonia - France
+GHA,42,Ghana,Ghana
+EST,43,Estonia,Estonia (Republic of)
+PER,44,Peru,Peru
+MEX,45,Mexico,Mexico
+FLK,46,Falkland Islands,Falkland Islands (Malvinas) - United Kingdom of Great Britain and Northern Ireland
+MLT,47,Malta,Malta
+NAM,48,Namibia,Namibia (Republic of)
+MAR,49,Morocco,Morocco (Kingdom of)
+IND,50,India,India (Republic of)
+SEN,51,Senegal,Senegal (Republic of)
+REU,52,RŽunion,Reunion (French Department of) - France
+FSM,53,Federated States of Micronesia,Micronesia (Federated States of)
+UKR,54,Ukraine,Ukraine
+PNG,55,Papua New Guinea,Papua New Guinea
+SYC,56,Seychelles,Seychelles (Republic of)
+MHL,57,Marshall Islands,Marshall Islands (Republic of the)
+GUF,58,French Guiana,Guiana (French Department of) - France
+ISR,59,Israel,Israel (State of)
+USA,60,United States,Alaska (State of) - United States of America
+PAN,61,Panama,Panama (Republic of)
+CYP,62,Cyprus,Cyprus (Republic of)
+PRT,63,Portugal,Madeira - Portugal
+ALB,64,Albania,Albania (Republic of)
+BGR,65,Bulgaria,Bulgaria (Republic of)
+BLZ,66,Belize,Belize
+KIR,67,Kiribati,Kiribati (Republic of)
+ECU,68,Ecuador,Ecuador
+QAT,69,Qatar,Qatar (State of)

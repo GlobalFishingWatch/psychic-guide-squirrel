@@ -3,7 +3,7 @@ The following script creates a geotiff of vessel density for a given calendar da
 
 usage:
 
-! python daily_raster_fishing_effort.py yyyymmdd
+! python daily_raster_fishing_effort_bands.py yyyymmdd country_iso3
 
 The code for downloading a table from BigQuery was written by Tim Hochberg:
 https://github.com/GlobalFishingWatch/nn-vessel-classification/blob/master/tah-proto/get-data/gctools.py
@@ -20,54 +20,101 @@ import numpy as np
 import gzip
 import rasterio as rio
 import affine
+import os.path
 
 # date should be YYYYMMDD
 # I don't have any error handling, so get it right
-thedate = sys.argv[1] # 
+thedate = sys.argv[1] 
+
+#country is an iso3 value for the country
+country_iso3 = sys.argv[2]  
 
 # Change these depending on where you want things locally
 path_to_csv_zip = "data/dailytables/fishing_vessel_effort_bands/zips/"
-path_to_tiff = "data/dailytables/fishing_vessel_effort_bands/tiffs/"
+path_to_tif = "data/dailytables/fishing_vessel_effort_bands/tifs/"
+
+
+codes = {}
+all_codes = []
+with open('iso3.csv','rU') as csvfile:
+    reader = csv.DictReader(csvfile)
+    for row in reader:
+        iso3 = row['iso3']
+        code = row['code']
+        if iso3 not in codes:
+            codes[iso3] = []
+        codes[iso3].append(code)
+        all_codes.append(code)
+
+
 
 yyyy = thedate[:4]
 mm = thedate[4:6]
 dd = thedate[6:8]
 
 # make all 
-query = '''
-SELECT
-  INTEGER(FLOOR(lat*10)) lat_bin,
-  INTEGER(FLOOR(lon*10)) lon_bin,
-  SUM(hours) hours
-FROM
-  [pipeline_classify_logistic_715_fishing.'''+thedate+''']
-WHERE
-  measure_new_score > .5
-  and seg_id NOT IN (
+
+if country_iso3 != "INV":
+    code_list = ",".join(codes[country_iso3])
+
+    query = '''
+    SELECT
+      INTEGER(FLOOR(lat*10)) lat_bin,
+      INTEGER(FLOOR(lon*10)) lon_bin,
+      SUM(hours) hours
+    FROM
+      [pipeline_740__classify_hours.{thedate}]
+    WHERE
+      measure_new_score > .5
+      AND seg_id IN (
+      SELECT
+        seg_id
+      FROM
+        [scratch_david_seg_analysis.good_segments] )
+      AND mmsi IN (
+      SELECT
+        mmsi
+      FROM
+        [scratch_david_mmsi_lists.known_likely_fishing_mmsis_{yyyy}]
+      where mmsi > 99999999
+      and integer(mmsi/1000000) in ({code_list}))
+    GROUP BY
+      lat_bin,
+      lon_bin
+    '''.format(thedate=thedate,yyyy=yyyy, code_list=code_list)
+
+else: # invlaid mmsi
+    code_list = ",".join(all_codes)
+    query = '''
   SELECT
-    seg_id
+    INTEGER(FLOOR(lat*10)) lat_bin,
+    INTEGER(FLOOR(lon*10)) lon_bin,
+    SUM(hours) hours
   FROM
-    [scratch_david_seg_analysis_661b.'''+thedate[:4]+'''_segments]
+    [pipeline_740__classify_hours.{thedate}]
   WHERE
-    (point_count<20
-      AND terrestrial_positions = point_count)
-    OR ((min_lon >= 0 // these are almost definitely noise
-        AND max_lon <= 0.109225)
-      OR (min_lat >= 0
-        AND max_lat <= 0.109225) ))
-  AND lat < 90
-  AND lat > -90
-  AND lon > -180
-  AND lon < 180
-GROUP BY
-  lat_bin,
-  lon_bin
-'''
+    measure_new_score > .5
+    AND seg_id IN (
+    SELECT
+      seg_id
+    FROM
+      [scratch_david_seg_analysis.good_segments] )
+    AND mmsi IN (
+    SELECT
+      mmsi
+    FROM
+      [scratch_david_mmsi_lists.known_likely_fishing_mmsis_{yyyy}]
+    where mmsi <= 99999999
+    or integer(mmsi/1000000) not in ({code_list}))
+  GROUP BY
+    lat_bin,
+    lon_bin
+  '''.format(thedate=thedate,yyyy=yyyy, code_list=code_list)
 
 
 proj_id = "world-fishing-827"
 dataset = "scratch_global_fishing_raster"
-table = "fishing_effort_bands_"+thedate
+table = "fishing_effort_bands_"+country_iso3+"_"+thedate
 
 class BigQuery:
 
@@ -197,8 +244,7 @@ gcs_path = "gs://david-scratch/"+table+".zip"
 local_path = path_to_csv_zip+table+".zip"
 
 
-import os.path
-if not os.path.isfile(path_to_csv_zip+'fishing_effort_'+thedate+".zip"): 
+if not os.path.isfile(local_path): 
     print thedate
     bigq = BigQuery()
     query_job = bigq.async_query(proj_id, query, dataset, table)
@@ -212,8 +258,11 @@ if not os.path.isfile(path_to_csv_zip+'fishing_effort_'+thedate+".zip"):
 
 # .1 degree grid
 
-if not os.path.isfile(path_to_tiff+yyyy+"-"+mm+"-"+dd+".tif"): 
-    print yyyy+"-"+mm+"-"+dd
+out_tif = path_to_tif + country_iso3+"-"+yyyy+"-"+mm+"-"+dd+".tif"
+
+if not os.path.isfile(out_tif): 
+
+
     one_over_cellsize = 10
     cellsize = .1
     num_lats = 180 * one_over_cellsize
@@ -222,7 +271,7 @@ if not os.path.isfile(path_to_tiff+yyyy+"-"+mm+"-"+dd+".tif"):
     vessel_hours = np.zeros(shape=(num_lats,num_lons))
     #vessel_hours = np.zeros(shape=(num_lats,num_lons))
 
-    with gzip.open(path_to_csv_zip+table+".zip", 'rb') as f:
+    with gzip.open(local_path, 'rb') as f:
         reader = csv.DictReader(f)
         for row in reader:
             lat = int(row['lat_bin'])
@@ -241,7 +290,7 @@ if not os.path.isfile(path_to_tiff+yyyy+"-"+mm+"-"+dd+".tif"):
         'dtype': rio.float32,
         'height': num_lats,
         'width': num_lons,
-        'count': 2,
+        'count': 1,
         'driver': "GTiff",
         'transform': affine.Affine(float(cellsize), 0, -180, 
                                    0, -float(cellsize), 90),
@@ -252,21 +301,17 @@ if not os.path.isfile(path_to_tiff+yyyy+"-"+mm+"-"+dd+".tif"):
         'PREDICTOR': '3'
     }
 
+    # # Read bands individually and write individually
+    # with rio.open('RGB.byte.tif') as src, \
+    #         rio.open('individual.tif', 'w', **src.profile) as dst:
+    #     for bidx in range(1, src.count + 1):
+    #         data = src.read(bidx)
+    #         dst.write(data, indexes=bidx)
+
+    # Kevin says You also want the GeoTIFF creation option `PHOTOMETRIC=MINISBLACK`.  
+    # If an image has 3+ bands of type Byte GDAL will assume `PHOTOMETRIC=RGB`
 
 
-# # Read bands individually and write individually
-# with rio.open('RGB.byte.tif') as src, \
-#         rio.open('individual.tif', 'w', **src.profile) as dst:
-#     for bidx in range(1, src.count + 1):
-#         data = src.read(bidx)
-#         dst.write(data, indexes=bidx)
-
-# Kevin says You also want the GeoTIFF creation option `PHOTOMETRIC=MINISBLACK`.  
-# If an image has 3+ bands of type Byte GDAL will assume `PHOTOMETRIC=RGB`
-
-
-    out_tif = yyyy+"-"+mm+"-"+dd+".tif"
-
-    with rio.open(path_to_tiff + out_tif, 'w', **profile) as dst:
+    with rio.open(out_tif, 'w', **profile) as dst:
         dst.write(np.flipud(vessel_hours).astype(profile['dtype']), indexes=1)
-        dst.write((np.flipud(vessel_hours)/2.).astype(profile['dtype']), indexes=2)
+        # dst.write((np.flipud(vessel_hours)/2.).astype(profile['dtype']), indexes=2)

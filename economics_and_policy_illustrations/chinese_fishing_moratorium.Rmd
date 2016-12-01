@@ -1,0 +1,99 @@
+---
+title: "Chinese_fishing_moratorium"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(bigrquery)
+library(DBI)
+library(lubridate)
+
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+
+knitr::opts_chunk$set(connection = "BQ_connection")
+```
+
+
+### Lets get the daily number of active Chinese vessels (more than 1 position with speed > 1) from 2013-2015
+
+```{sql, connection = BQ_connection, output.var = "active_vessel_2015"}
+SELECT
+  eez,
+  year,
+  date(timestamp) date,
+  exact_count_distinct(mmsi) active_vessels
+FROM
+  [ucsb-gfw:fao.all_years_clean_effort_with_FAO_regions]
+WHERE
+country == "China" and speed > 1 and year != 2012
+  group by eez, year, date order by date
+```
+
+```{r}
+active_vessel_2015 %>% 
+  filter(eez == "China") %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(active_vessels = sum(active_vessels)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = date, y = active_vessels))+
+  geom_rect(xmin = as.numeric(lubridate::ymd("2015-02-18")), xmax = as.numeric(lubridate::ymd("2015-02-24")),
+            ymin = -Inf, ymax = Inf,  alpha = .01, fill = "lightblue", color = "transparent") + # Chinese new year and holiday
+  # geom_text(data = labels, aes(label=grp), colour="blue", angle=90, text=element_text(size=11)) +
+  geom_rect(xmin = as.numeric(lubridate::ymd("2014-01-31")), xmax = as.numeric(lubridate::ymd("2014-02-6")),
+            ymin = -Inf, ymax = Inf,  alpha = .01, fill = "lightblue", color = "transparent") + # Chinese new year and holiday
+  geom_rect(xmin = as.numeric(lubridate::ymd("2013-02-10")), xmax = as.numeric(lubridate::ymd("2013-02-15")),
+            ymin = -Inf, ymax = Inf,  alpha = .01, fill = "lightblue", color = "transparent") + # Chinese new year and holiday
+  geom_rect(xmin = as.numeric(lubridate::ymd("2015-05-16")), xmax = as.numeric(lubridate::ymd("2015-08-01")),
+            ymin = -Inf, ymax = Inf,  alpha = .01, fill = "orange", color = "transparent")+ # chinese moratorium: May 16th - August 1
+  geom_rect(xmin = as.numeric(lubridate::ymd("2014-05-16")), xmax = as.numeric(lubridate::ymd("2014-08-01")),
+            ymin = -Inf, ymax = Inf,  alpha = .01, fill = "orange", color = "transparent")+
+  geom_rect(xmin = as.numeric(lubridate::ymd("2013-05-16")), xmax = as.numeric(lubridate::ymd("2013-08-01")),
+            ymin = -Inf, ymax = Inf,  alpha = .01, fill = "orange", color = "transparent")+
+  geom_point()+
+  geom_line()+
+  theme_minimal()+
+  scale_x_date(date_breaks = "1 month", date_labels = "%y %b")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  ggtitle("")
+
+```
+
+
+```{sql connection = BQ_connection, output.var = "NOT_affected_vessels_2015"}
+SELECT
+    mmsi
+  FROM
+    [ucsb-gfw:fao.2015_clean_effort_with_FAO_regions]
+  WHERE
+    country == "China" and speed > 1 
+    AND (DATE(timestamp) > "2015-05-16" AND DATE(timestamp) < "2015-08-01")
+  GROUP BY
+    mmsi
+```
+
+
+```{sql connection = BQ_connection, output.var = "affected_vessels_2015"}
+SELECT
+  mmsi
+FROM
+  [ucsb-gfw:fao.2015_clean_effort_with_FAO_regions]
+WHERE
+  country == "China" 
+  and speed > 1
+  AND ((DATE(timestamp) < "2015-05-16" AND DATE(timestamp) > "2015-04-16") or (DATE(timestamp) > "2015-08-01" AND DATE(timestamp) < "2015-09-01"))
+  AND mmsi NOT IN (
+  SELECT
+    mmsi
+  FROM
+    [ucsb-gfw:fao.2015_clean_effort_with_FAO_regions]
+  WHERE
+    country == "China" and speed > 1 
+    AND DATE(timestamp) > "2015-05-16"
+    AND DATE(timestamp) < "2015-08-01"
+  GROUP BY
+    mmsi)
+    group by mmsi
+```
+

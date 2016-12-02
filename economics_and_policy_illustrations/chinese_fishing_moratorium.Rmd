@@ -8,29 +8,32 @@ library(tidyverse)
 library(bigrquery)
 library(DBI)
 library(lubridate)
+library(dygraphs)
 
 BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
-
 knitr::opts_chunk$set(connection = "BQ_connection")
 ```
 
 
-### Lets get the daily number of active Chinese vessels (more than 1 position with speed > 1) from 2013-2015
+### Time Series of active days
+
+Lets take a look at the number of active Chinese vessels (more than 1 position with speed > 1) per day from 2013-2015.
 
 ```{sql, connection = BQ_connection, output.var = "active_vessel_2015"}
 SELECT
   eez,
   year,
   date(timestamp) date,
-  exact_count_distinct(mmsi) active_vessels
+  exact_count_distinct(mmsi) active_vessels,
+  sum(if(measure_new_score >= .5, hours, 0)) fishing_hours
 FROM
   [ucsb-gfw:fao.all_years_clean_effort_with_FAO_regions]
 WHERE
-country == "China" and speed > 1 and year != 2012
+country == "China" and speed > .1 and year != 2012
   group by eez, year, date order by date
 ```
 
-```{r}
+```{r, eval=FALSE}
 active_vessel_2015 %>% 
   filter(eez == "China") %>% 
   mutate(date = lubridate::ymd(date)) %>% 
@@ -56,44 +59,351 @@ active_vessel_2015 %>%
   theme_minimal()+
   scale_x_date(date_breaks = "1 month", date_labels = "%y %b")+
   theme(axis.text.x = element_text(angle = 90, hjust = 1))+
-  ggtitle("")
-
+  ggtitle("Active Chinese Vessels inside China's EEZ")
 ```
 
+```{r , fig.width=12}
+t <- active_vessel_2015 %>% 
+  filter(eez == "China") %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(active_vessels = sum(active_vessels)) %>% 
+  ungroup() %>% 
+  select(-year)
+
+dygraphs::dygraph(xts::xts(t$active_vessels,t$date), main = "Active Chinese vessels inside their own EEZ") %>% 
+  dygraphs::dyRangeSelector(dateWindow = c("2013-01-01", "2015-12-31")) %>% 
+  dySeries(label = "Active vessels", color = "black") %>%
+  dyShading(from = "2015-02-18", to = "2015-02-24", color = "#CCEBD6") %>% 
+  dyShading(from = "2014-01-31", to = "2014-02-6", color = "#CCEBD6") %>% 
+  dyShading(from = "2013-02-10", to = "2013-02-15", color = "#CCEBD6") %>% 
+  dyShading(from = "2015-05-16", to = "2015-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2014-05-16", to = "2014-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2013-05-16", to = "2013-08-01", color = "#FFE6E6") %>% 
+  dyRoller(rollPeriod = 3)
+```
+
+
+#### Does the number of active vessels increase in other regions because of the moratoria?
+
+
+```{r, fig.width=12}
+t <- active_vessel_2015 %>% 
+  filter(eez == "Conflict zone China/Japan/Taiwan") %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(active_vessels = sum(active_vessels)) %>% 
+  ungroup() %>% 
+  select(-year)
+
+dygraphs::dygraph(xts::xts(t$active_vessels,t$date), main = "Active Chinese vessels in Conflict zone China/Japan/Taiwan") %>% 
+  dygraphs::dyRangeSelector(dateWindow = c("2013-01-01", "2015-12-31")) %>% 
+  dySeries(label = "Active vessels", color = "black") %>%
+  dyShading(from = "2015-02-18", to = "2015-02-24", color = "#CCEBD6") %>% 
+  dyShading(from = "2014-01-31", to = "2014-02-6", color = "#CCEBD6") %>% 
+  dyShading(from = "2013-02-10", to = "2013-02-15", color = "#CCEBD6") %>% 
+  dyShading(from = "2015-05-16", to = "2015-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2014-05-16", to = "2014-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2013-05-16", to = "2013-08-01", color = "#FFE6E6") 
+```
+
+```{r, fig.width=12}
+t <- active_vessel_2015 %>% 
+  filter(eez == "South Korea") %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(active_vessels = sum(active_vessels)) %>% 
+  ungroup() %>% 
+  select(-year)
+
+dygraphs::dygraph(xts::xts(t$active_vessels,t$date), main = "Active Chinese vessels in South Korea EEZ") %>% 
+  dygraphs::dyRangeSelector(dateWindow = c("2013-01-01", "2015-12-31")) %>% 
+  dySeries(label = "Active vessels", color = "black") %>%
+  dyShading(from = "2015-02-18", to = "2015-02-24", color = "#CCEBD6") %>% 
+  dyShading(from = "2014-01-31", to = "2014-02-6", color = "#CCEBD6") %>% 
+  dyShading(from = "2013-02-10", to = "2013-02-15", color = "#CCEBD6") %>% 
+  dyShading(from = "2015-05-16", to = "2015-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2014-05-16", to = "2014-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2013-05-16", to = "2013-08-01", color = "#FFE6E6") 
+```
+
+```{r, fig.width=12}
+t <- active_vessel_2015 %>% 
+  filter(is.na(eez)) %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(active_vessels = sum(active_vessels)) %>% 
+  ungroup() %>% 
+  select(-year)
+
+dygraphs::dygraph(xts::xts(t$active_vessels,t$date), main = "Active Chinese vessels in the high seas") %>% 
+  dygraphs::dyRangeSelector(dateWindow = c("2013-01-01", "2015-12-31")) %>% 
+  dySeries(label = "Active vessels", color = "black") %>%
+  dyShading(from = "2015-02-18", to = "2015-02-24", color = "#CCEBD6") %>% 
+  dyShading(from = "2014-01-31", to = "2014-02-6", color = "#CCEBD6") %>% 
+  dyShading(from = "2013-02-10", to = "2013-02-15", color = "#CCEBD6") %>% 
+  dyShading(from = "2015-05-16", to = "2015-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2014-05-16", to = "2014-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2013-05-16", to = "2013-08-01", color = "#FFE6E6") 
+```
+
+### Who is unaffected by the moratoria?
+```{r}
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "high-seas")
+```
 
 ```{sql connection = BQ_connection, output.var = "NOT_affected_vessels_2015"}
 SELECT
-    mmsi
+    mmsi,
+    length,
+    general_vessel_type,
+    sum(if ((eez is null or eez == "Antarctica") and measure_new_score >= 0.5, hours,0)) fishing_hours_in_HS,
+    sum(if (eez == "China" and measure_new_score >= 0.5, hours,0)) fishing_hours_in_China,
+    sum(if (eez != "China" and eez != "Antarctica" and eez is not null and measure_new_score >= 0.5, hours,0)) fishing_hours_in_foreign_EEZ
   FROM
-    [ucsb-gfw:fao.2015_clean_effort_with_FAO_regions]
+    [clean_effort.clean_effort_with_VC_and_FAO_2015]
   WHERE
-    country == "China" and speed > 1 
+    country == "China" and speed > 1 and eez == "China"
     AND (DATE(timestamp) > "2015-05-16" AND DATE(timestamp) < "2015-08-01")
   GROUP BY
-    mmsi
+    mmsi, length, general_vessel_type
 ```
 
+There are `r length(NOT_affected_vessels_2015$mmsi)` vessels that remain active inside China's EEZ during the moratoria. Their size distribution looks like:
+
+```{r}
+NOT_affected_vessels_2015 %>% 
+  ggplot(aes(x = length)) +
+  geom_histogram(
+  aes(y = ..density..),
+  # Histogram with density instead of count on y-axis
+  binwidth = 5,
+  colour = "black",
+  fill = "white"
+  ) +
+  geom_density(alpha = .2, fill = "lightblue") +
+  ggtitle('Size Distribution of unaffected vessels') +
+  theme_bw()
+```
+
+The gear types of these vessels are:
+
+```{r}
+NOT_affected_vessels_2015 %>% 
+  group_by(general_vessel_type) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  knitr::kable()
+```
+
+### How many vessels are affected by the moratoria?
+
+Comparing the active vessels in China's EEZ one month before and after the moratoria with those active during the moratoria we can estimate the number of vessels affected by this policy.
 
 ```{sql connection = BQ_connection, output.var = "affected_vessels_2015"}
 SELECT
-  mmsi
+  mmsi,
+  length,
+  general_vessel_type
 FROM
-  [ucsb-gfw:fao.2015_clean_effort_with_FAO_regions]
+  [clean_effort.clean_effort_with_VC_and_FAO_2015]
 WHERE
-  country == "China" 
+  country == "China" and eez == "China"
   and speed > 1
   AND ((DATE(timestamp) < "2015-05-16" AND DATE(timestamp) > "2015-04-16") or (DATE(timestamp) > "2015-08-01" AND DATE(timestamp) < "2015-09-01"))
   AND mmsi NOT IN (
   SELECT
     mmsi
   FROM
-    [ucsb-gfw:fao.2015_clean_effort_with_FAO_regions]
+    [clean_effort.clean_effort_with_VC_and_FAO_2015]
+  WHERE
+    country == "China" and speed > 1 and eez == "China"
+    AND DATE(timestamp) > "2015-05-16"
+    AND DATE(timestamp) < "2015-08-01"
+  GROUP BY
+    mmsi)
+    group by mmsi, length, general_vessel_type
+```
+
+There are `r length(affected_vessels_2015$mmsi)` vessels that were active within China's EEZ one month before or after the moratoria but that are not during the moratoria.
+
+```{sql connection = BQ_connection, output.var = "removed_vessels_2015"}
+SELECT
+  mmsi,
+  length,
+  general_vessel_type
+FROM
+  [clean_effort.clean_effort_with_VC_and_FAO_2015]
+WHERE
+  country == "China" and eez == "China"
+  and speed > 1
+  AND ((DATE(timestamp) < "2015-05-16" AND DATE(timestamp) > "2015-04-16") or (DATE(timestamp) > "2015-08-01" AND DATE(timestamp) < "2015-09-01")) 
+  AND mmsi NOT IN (
+  SELECT
+    mmsi
+  FROM
+    [clean_effort.clean_effort_with_VC_and_FAO_2015]
   WHERE
     country == "China" and speed > 1 
     AND DATE(timestamp) > "2015-05-16"
     AND DATE(timestamp) < "2015-08-01"
   GROUP BY
     mmsi)
-    group by mmsi
+    group by mmsi, length, general_vessel_type
 ```
+
+```{r}
+displaced_vessels_2015 <- affected_vessels_2015 %>% 
+  filter(!mmsi %in% removed_vessels_2015$mmsi)
+
+```
+
+ Of those, `r length(removed_vessels_2015$mmsi)` are not see at all during the moratoria and `r length(displaced_vessels_2015$mmsi)` were displaced to other regions. **The question then is: what are these vessels doing? where did they go?** 
+
+```{r}
+BQ_connection <-  dbConnect(dbi_driver(),dataset = "Juan", project = "ucsb-gfw")
+
+if(dbExistsTable(BQ_connection, "chinese_moratorium_displaced_vessels_2015")){
+  dbRemoveTable(BQ_connection, "chinese_moratorium_displaced_vessels_2015") 
+  dbWriteTable(BQ_connection, "chinese_moratorium_displaced_vessels_2015", displaced_vessels_2015)
+} else {dbWriteTable(BQ_connection, "chinese_moratorium_displaced_vessels_2015", displaced_vessels_2015)}
+```
+
+```{sql connection = BQ_connection, output.var = "displaced_effort"}
+SELECT
+  eez,
+  year,
+  date(timestamp) date,
+  exact_count_distinct(mmsi) active_vessels,
+  sum(if(measure_new_score >= .5, hours, 0)) fishing_hours
+FROM
+  [ucsb-gfw:fao.all_years_clean_effort_with_FAO_regions]
+WHERE
+country == "China" and speed > .1 and year = 2015 and mmsi in (Select mmsi from [Juan.chinese_moratorium_displaced_vessels_2015])
+  group by eez, year, date order by date
+```
+
+
+```{r, fig.width=12}
+effort_inside <- displaced_effort %>% 
+  filter(eez == "China") %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(fishing_hours = sum(fishing_hours)) %>% 
+  ungroup() %>% 
+  select(-year)
+
+effort_inside <- xts::xts(effort_inside$fishing_hours,effort_inside$date)
+
+effort_outside <- displaced_effort %>% 
+  filter(!is.na(eez) & eez != "China") %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(year, date) %>% 
+  summarise(fishing_hours = sum(fishing_hours)) %>% 
+  ungroup() %>% 
+  select(-year)
+
+effort_outside <- xts::xts(effort_outside$fishing_hours,effort_outside$date)
+
+effort <- cbind(effort_outside,effort_inside)
+
+dygraphs::dygraph(effort, main = "Fishing hours by the displaced fleet before, during, and after moratoria") %>% 
+  dygraphs::dyRangeSelector(dateWindow = c("2015-01-01", "2015-12-31")) %>% 
+  dySeries(name = "..1",label = "Effort in foreign EEZ", color = "blue") %>%
+  dySeries(name = "..2",label = "Effort inside EEZ", color = "black") %>%
+  dyShading(from = "2015-02-18", to = "2015-02-24", color = "#CCEBD6") %>% 
+  dyShading(from = "2014-01-31", to = "2014-02-6", color = "#CCEBD6") %>% 
+  dyShading(from = "2013-02-10", to = "2013-02-15", color = "#CCEBD6") %>% 
+  dyShading(from = "2015-05-16", to = "2015-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2014-05-16", to = "2014-08-01", color = "#FFE6E6") %>% 
+  dyShading(from = "2013-05-16", to = "2013-08-01", color = "#FFE6E6") %>% 
+  dyLegend(width = 500) %>% 
+  dyRoller(rollPeriod = 3)
+```
+
+
+
+# What happens the moratoria ends?
+```{r}
+BQ_connection <-  dbConnect(dbi_driver(),dataset = "", project = "high-seas")
+```
+
+```{sql connection = BQ_connection, output.var = "removed_vessels_effort_2015"}
+select
+mmsi,
+timestamp,
+lon,
+lat
+FROM
+  [ucsb-gfw:fao.all_years_clean_effort_with_FAO_regions]
+WHERE
+country == "China" and eez == "China" and year = 2015 and speed > 1 and mmsi in (
+SELECT
+  mmsi
+FROM
+  [clean_effort.clean_effort_with_VC_and_FAO_2015]
+WHERE
+  country == "China" and eez == "China"
+  and speed > 1
+  AND ((DATE(timestamp) < "2015-05-16" AND DATE(timestamp) > "2015-04-16") or (DATE(timestamp) > "2015-08-01" AND DATE(timestamp) < "2015-09-01")) 
+  AND mmsi NOT IN (
+  SELECT
+    mmsi
+  FROM
+    [clean_effort.clean_effort_with_VC_and_FAO_2015]
+  WHERE
+    country == "China" and speed > 1 
+    AND DATE(timestamp) > "2015-05-16"
+    AND DATE(timestamp) < "2015-08-01"
+  GROUP BY
+    mmsi)
+    group by mmsi) 
+  AND DATE(timestamp) > "2015-07-28"
+    AND DATE(timestamp) < "2015-08-05"
+```
+
+
+
+```{r}
+removed_vessels_effort_2015 <- removed_vessels_effort_2015 %>% 
+               mutate(dh = round_date(timestamp, unit = "hours")) %>% 
+  arrange(dh)
+
+day_hours <- unique(removed_vessels_effort_2015$dh)
+
+for (i in seq_along(day_hours)){
+  p <- ggmap::ggmap(ggmap::get_map(location = c(125,30,125,30), zoom = 4,  maptype = c("satellite"), source = 'google'))+
+  geom_point(data = removed_vessels_effort_2015 %>% 
+               filter(dh == day_hours[i]),
+             aes(x=lon, y=lat), color="red", size = 1)
+  ggsave(filename = paste("chinese_blub/plot_",day_hours[i],".pdf",sep = ""), p, device = "pdf")
+}
+
+```
+
+
+
+```{r}
+# Not working
+# draw.a.plot<-  function(i){
+#   g <- ggmap::ggmap(ggmap::get_map(location = c(125,30,125,30), zoom = 4,  maptype = c("satellite"), source = 'google'))+
+#   geom_point(data = removed_vessels_effort_2015 %>% 
+#                filter(dh == day_hours[i]),
+#              aes(x=lon, y=lat), color="red", size = 1)
+#   
+#   #print out the plot
+#   print(g)
+# }
+# 
+# 
+# loop.animate <- function() {
+#   lapply(1:length(day_hours), function(i) {
+#     draw.a.plot(i)
+#   })
+# }
+# 
+# animation::saveGIF(loop.animate(), interval = .5, movie.name="happy2015.gif")
+```
+
+
 

@@ -1,0 +1,143 @@
+---
+title: "dynamic_ocean_management"
+output:
+  html_document: default
+  html_notebook: default
+---
+```{r}
+knitr::opts_chunk$set(comment=NA, echo = FALSE, warnings = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(bigrquery)
+library(DBI)
+library(lubridate)
+library(dygraphs)
+library(dggridR)
+library(ggmap)
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+```
+
+# Dynamic effort in the ETP
+
+```{sql connection = BQ_connection, output.var = "ETP_effort"}
+Select
+date(timestamp) date,
+lon,
+lat,
+hours,
+if(measure_new_score >= 0.5, hours, 0 ) fishing_hours
+from 
+[high-seas::clean_effort.clean_effort_with_VC_and_FAO_2015]
+where lat < 9.99 
+and lat > -4.85 
+and lon > -98.04 
+and lon < -77.08 
+and date(timestamp) > "2015-01-01" 
+and date(timestamp) < "2015-12-31"
+
+```
+
+```{r}
+ETP_effort <- ETP_effort %>% 
+  mutate(week = week(date))
+
+ETP_effort$fishing_hours[ETP_effort$fishing_hours == 0] <- NA
+
+```
+
+```{r fig.show='animate', warning=FALSE}
+#Generate a dggs specifying an intercell spacing of ~25 miles
+dggs <- dgconstruct(spacing=25, metric=FALSE, resround='nearest')
+
+#Get the corresponding grid cells for each  (lat-long pair)
+ETP_effort$cell <- dgtransform(dggs,ETP_effort$lat,ETP_effort$lon)
+
+#Get the sum of effort in each cell
+sum_effort   <- ETP_effort %>% group_by(week,cell) %>% summarise(effort=sum(fishing_hours, na.rm = TRUE))
+
+#Get the grid cell boundaries for cells with effort
+grid <- dgcellstogrid(dggs,sum_effort$cell,frame=TRUE,wrapcells=TRUE)
+                                                                
+#Update the grid cells' properties to include the effort in each cell
+grid <- merge(grid,sum_effort,by.x="Name",by.y="cell")
+grid$effort    <- log(grid$effort)
+
+p <- ggmap::ggmap(ggmap::get_map(location = c(-89,2,-84,2), zoom = 6,  maptype = c("satellite"), source = 'google'))+
+  geom_polygon(data=grid, aes(x=long, y=lat, group=group, fill=effort, frame = week), alpha=0.6)    +
+    geom_path   (data=grid,      aes(x=long, y=lat, group=group), alpha=0.4, color="white") +
+    scale_fill_gradient(low="yellow", high="red")+
+  theme_minimal()
+
+gganimate::gg_animate(p, interval = .5)
+gganimate::gg_animate(p, "ETP.mp4",interval = .5)
+```
+
+## Hawaii FADS 
+
+```{r}
+FADS <- read_csv("hawaii_FADS.csv") %>% 
+  filter(is.na(status)) %>% 
+  select(-status) %>% 
+  as_data_frame()
+
+
+buffer_FADS <- as_data_frame(FADS)
+
+coordinates( buffer_FADS ) <- c( "lon", "lat" )
+proj4string( buffer_FADS ) <- CRS( "+proj=longlat +datum=WGS84" )
+
+buffers <- rgeos::gBuffer(buffer_FADS %>% 
+                            sp::spTransform(CRS("+proj=utm +zone=4n +datum=WGS84")) , width=1850*1, byid=TRUE )
+
+buffers <- buffers %>% 
+   sp::spTransform(CRS( "+proj=longlat +datum=WGS84" ))
+
+```
+
+```{r}
+#c(-157,21,-157,21) hawaii bounding box
+
+ggmap::ggmap(ggmap::get_map(location = c(-157,21,-157,21),zoom = 7,maptype = c("satellite"), source = 'google'))+
+  geom_point(data = FADS,
+             aes(x=lon, y=lat), color="red", size = .5)+
+  geom_polygon(aes(x = long, y = lat, group = id), fill = "yellow",  alpha = .2, data = broom::tidy(buffers))
+```
+
+
+### effort in hawaii
+
+```{sql connection = BQ_connection, output.var = "hawaii_effort"}
+Select
+timestamp,
+mmsi,
+lon,
+lat,
+hours,
+if(measure_new_score >= 0.5, hours, 0 ) fishing_hours
+from 
+[high-seas::clean_effort.clean_effort_with_VC_and_FAO_2015]
+where lat < 23 
+and lat > 18
+and lon > -161
+and lon < -154
+and date(timestamp) > "2015-01-01" 
+and date(timestamp) < "2015-12-31"
+```
+
+```{r}
+hawaii_effort <- hawaii_effort %>% 
+               mutate(month = round_date(timestamp, unit = "month")) %>% 
+  arrange(timestamp) 
+
+ggmap::ggmap(ggmap::get_map(location = c(-157,21,-157,21),zoom = 7,maptype = c("satellite"), source = 'google'))+
+  geom_point(data = FADS,
+             aes(x=lon, y=lat), color="red", size = .5)+
+  geom_path(data = hawaii_effort,
+             aes(x=lon, y=lat, group = mmsi, col = as.factor(mmsi)), alpha = .2)+
+  guides(col=FALSE)
+
+
+```
+

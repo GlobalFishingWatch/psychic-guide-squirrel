@@ -1,0 +1,210 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(bigrquery)
+library(DBI)
+library(boxr)
+library(sp)
+
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+knitr::opts_chunk$set(connection = "BQ_connection", echo = FALSE, message = FALSE, warning = FALSE)
+
+```
+
+```{r}
+shp_path <- paste("~/Box Sync/mpatlas_export_20161128")
+
+mpa_atlas <- rgdal::readOGR(dsn = path.expand(shp_path), layer = "mpatlas_export_20161128")
+```
+
+```{r}
+pipa_shp <- mpa_atlas[mpa_atlas@data$mpa_id == 7705427,]
+
+ggmap::ggmap(ggmap::get_map(location = c(-174,-4,-172,-4), zoom = 6,  maptype = c("satellite"), source = 'google'))+
+  geom_polygon(data=fortify(pipa_shp), aes(x=long, y=lat, group=group), color = "red", alpha=0.6)    
+```
+
+```{r}
+pipa_buffers <- sapply(c(20,40,60,80,100), function(i){
+  rgeos::gBuffer(pipa_shp %>%
+                   spTransform(CRS("+proj=utm +zone=2s +datum=WGS84")), width = 1852*i, byid = FALSE, id = i)
+  })
+
+## Deletes previous buffers to get only the doughnuts
+for (i in length(pipa_buffers):2) {
+   pipa_buffers[[i]]<-rgeos::gDifference(pipa_buffers[[i]], pipa_buffers[[i-1]], id = pipa_buffers[[i]]@polygons[[1]]@ID)
+}
+
+## Deletes the initial EEZ
+pipa_buffers[[1]]<-rgeos::gDifference(pipa_buffers[[1]], pipa_shp %>% spTransform(CRS("+proj=utm +zone=2s +datum=WGS84")),id = pipa_buffers[[1]]@polygons[[1]]@ID )
+
+## Transforms the buffers into a Spatial Polygons Dataframe, gives each buffer an ID:distance from the EEZ, and caculates the area of each buffer.
+
+pipa_buffers_spdf <- sapply(1:length(pipa_buffers), function(i){
+  r <- c("20", "40", "60","80","100")
+  SpatialPolygonsDataFrame(pipa_buffers[[i]] %>% 
+                             spTransform(CRS(sp::proj4string(pipa_shp))), data = data.frame(row.names = r[i],
+                                                                                                   id = r[i],
+                                                                                                   area = rgeos::gArea(pipa_buffers[[i]]))) 
+  })
+
+## Combines the buffers from a list into a dataframe
+
+pipa_buffers_spdf <- do.call(rbind, pipa_buffers_spdf)
+
+ggmap::ggmap(ggmap::get_map(location = c(-174,-4,-172,-4), zoom = 6,  maptype = c("satellite"), source = 'google'))+
+  geom_polygon(data=fortify(pipa_shp), aes(x=long, y=lat, group=group), color = "red", alpha=0.6)+    
+  geom_polygon(aes(x = long, y = lat, fill = id),  alpha = .8, data = broom::tidy(pipa_buffers_spdf))
+```
+
+```{r}
+sql <- "SELECT
+  day(timestamp) day,
+  round(lon,3) lon,
+  round(lat,3) lat,
+  sum(engine_power*hours) hours,
+FROM
+  [clean_effort.clean_effort_with_VC_and_FAO_2015]
+where 
+lon > -179 and lon <-167 and lat >-9 and lat <  1
+and measure_new_score >= 0.5
+group by 
+day, lon, lat"
+
+effort_around_pipa <- query_exec(sql,"high-seas", max_pages = Inf)
+
+coordinates(effort_around_pipa) <- c("lon", "lat")
+sp::proj4string(effort_around_pipa) <- sp::proj4string(pipa_shp)
+```
+
+```{r}
+fishing_effort_all_buffers <- lapply(c(1:5), function(i){
+  buffer_id = c("20", "40", "60","80","100")
+  effort <- effort_around_pipa[!is.na(over(effort_around_pipa, as(pipa_buffers_spdf[pipa_buffers_spdf@data$id[i],], "SpatialPolygons"))),]
+  effort_df <- cbind(effort@coords, effort@data) %>% 
+    mutate(id = buffer_id[i])
+  })
+
+summary_of_fishing_effort_by_buffer <- do.call(rbind,fishing_effort_all_buffers) %>% 
+  group_by(id) %>% 
+  summarise(effort = sum(hours))
+
+tidy_effort_all_buffers <- broom::tidy(pipa_buffers_spdf) %>% 
+  left_join(summary_of_fishing_effort_by_buffer) %>% 
+  left_join(pipa_buffers_spdf@data) %>% 
+  mutate(area_sq_mile = area*3.86*10^-7) %>% 
+  mutate(effort_per_unit_area = effort/(area_sq_mile))
+
+effort_density_plot <- tidy_effort_all_buffers %>% 
+  group_by(id) %>% 
+  summarise(e = mean(effort)/mean(area_sq_mile)) %>% 
+  arrange(desc(e)) %>% 
+  mutate(id = factor(id, levels =  c("20", "40", "60","80","100"))) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = id , y = e))+
+  geom_point() + 
+  geom_line(aes(group = 1))+
+  theme_minimal()+
+  ylab("effort density [hours per square mile]")+
+  xlab("distance from EEZ border (nautical miles)")
+
+effort_density_plot
+
+effort_plot_full_buffers <- ggmap::ggmap(ggmap::get_map(location = c(-174,-4,-172,-4), zoom = 6,  maptype = c("satellite"), source = 'google'))+
+   geom_polygon(data=fortify(pipa_shp), aes(x=long, y=lat, group=group), color = "red", alpha=0.6)+    
+  geom_polygon(aes(x = long, y = lat, group = id, fill = effort_per_unit_area),  alpha = .8,data = tidy_effort_all_buffers %>% mutate(id = paste(id,"nm")))+
+  ylab("latitude")+
+  xlab("longitude")+
+  scale_fill_continuous(name ="Effort per unit area \n(Kwh per square mile) \n" )
+effort_plot_full_buffers
+
+```
+
+## Timse series of effort in PIPA's 20 nm buffer
+
+```{r}
+sql <- "
+SELECT
+  date(timestamp) date,
+  round(lon,3) lon,
+  round(lat,3) lat,
+  sum(hours) hours,
+FROM
+  [fao.all_years_clean_effort_with_FAO_regions]
+where 
+lon > -179 and lon <-167 and lat >-9 and lat <  1
+group by 
+date, lon, lat"
+
+effort_around_pipa <- query_exec(sql,"ucsb-gfw", max_pages = Inf)
+
+coordinates(effort_around_pipa) <- c("lon", "lat")
+sp::proj4string(effort_around_pipa) <- sp::proj4string(pipa_shp)
+```
+
+```{r}
+pipa_line <- rgeos::gBuffer(pipa_shp %>%
+                   spTransform(CRS("+proj=utm +zone=2s +datum=WGS84")), width = 1852*20, byid = FALSE, id = 20)
+
+## Deletes the initial EEZ
+pipa_line <-rgeos::gDifference(pipa_line, pipa_shp %>% spTransform(CRS("+proj=utm +zone=2s +datum=WGS84")),id = pipa_line@polygons[[1]]@ID )
+
+pipa_line_spdf <- SpatialPolygonsDataFrame(pipa_line %>% 
+                             spTransform(CRS(sp::proj4string(pipa_shp))), data = data.frame(row.names = "20",
+                                                                                                   id = "20"
+                                                                                                  )) 
+
+fishing_effort_on_the_line <-  effort_around_pipa[!is.na(over(effort_around_pipa, as(pipa_line_spdf[pipa_line_spdf@data$id[1],], "SpatialPolygons"))),]
+
+fishing_effort_on_the_line <- cbind(fishing_effort_on_the_line@coords, fishing_effort_on_the_line@data) %>% 
+  mutate(id = "20")
+
+
+t <- fishing_effort_on_the_line %>% 
+  mutate(date = lubridate::ymd(date)) %>% 
+  group_by(date) %>% 
+  summarise(effort = sum(hours)) %>% 
+  ungroup() 
+
+dygraphs::dygraph(xts::xts(t$effort,t$date), main = "Effort in PIPA 20nm buffer") %>% 
+  dygraphs::dyRangeSelector(dateWindow = c("2012-01-01", "2015-12-31")) %>% 
+  dygraphs::dySeries(label = "fishing hours", color = "black") %>% 
+  dygraphs::dyRoller(rollPeriod = 3)
+```
+
+
+```{r}
+year <- 2012
+
+
+get_fuel_price_ts <- function(year){
+  year_month <- seq(as.numeric(substr(year,3,4))*100+1,as.numeric(substr(year,3,4))*100+12,by=1)
+  sum=0
+  for (i in year_month) {
+    url <-
+    paste("http://www.bunkerindex.com/prices/bixfree_",
+    i,
+    ".php?priceindex_id=4",
+    sep = "")
+    table <- url %>%
+    read_html() %>%
+    html_nodes(xpath = '//*[@id="center"]/table[2]') %>%
+    html_table(fill = TRUE)
+    
+    t <- table[[1]] %>%
+    slice(5:n()) %>%
+    select(date = X1, price = X2) %>%
+    filter(!is.na(price)) %>%
+    head(-1)
+    
+    p <- mean(as.double(t$price))
+    
+    sum = sum + p
+  }
+  sum / 12}
+```
+

@@ -1,0 +1,177 @@
+---
+title: "effort and fuel"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(bigrquery)
+library(DBI)
+library(rvest)
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+
+```
+
+# Get the vessels that are active in all years
+
+```{sql , connection = BQ_connection, output.var = "active_2012_2013" }
+Select 
+a.mmsi mmsi,
+a.hours_distance_2012 hours_distance_2012,
+b.hours_distance_2013 hours_distance_2013
+from
+(SELECT
+  mmsi,
+  sum(hours*distance_from_shore) hours_distance_2012
+FROM
+  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2012-01-01"), TIMESTAMP("2012-12-31"))
+  group by mmsi) a
+inner join (
+SELECT
+  mmsi,
+  sum(hours*distance_from_shore) hours_distance_2013
+FROM
+  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2013-01-01"), TIMESTAMP("2013-12-31"))
+  group by mmsi
+)b 
+on a.mmsi = b.mmsi
+having hours_distance_2012 > 1000 and hours_distance_2013 > 1000
+```
+
+```{sql , connection = BQ_connection, output.var = "active_2014_2015" }
+Select 
+a.mmsi mmsi,
+a.hours_distance_2014 hours_distance_2014,
+b.hours_distance_2015 hours_distance_2015
+from
+(SELECT
+  mmsi,
+  sum(hours*distance_from_shore) hours_distance_2014
+FROM
+  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2014-01-01"), TIMESTAMP("2014-12-31"))
+  group by mmsi) a
+inner join (
+SELECT
+  mmsi,
+  sum(hours*distance_from_shore) hours_distance_2015
+FROM
+  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2015-01-01"), TIMESTAMP("2015-12-31"))
+  group by mmsi
+)b 
+on a.mmsi = b.mmsi
+having hours_distance_2014 > 1000 and hours_distance_2015 > 1000
+```
+
+```{sql , connection = BQ_connection, output.var = "active_2016"}
+SELECT
+  mmsi,
+  sum(hours*distance_from_shore) hours_distance_2016
+FROM
+  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2016-01-01"), TIMESTAMP("2016-11-01"))
+  group by mmsi
+  having hours_distance_2016 > 1000
+```
+
+```{r}
+consistently_active_vessels <- active_2016 %>% 
+  inner_join(active_2014_2015, by = "mmsi") %>% 
+  inner_join(active_2012_2013, by = "mmsi") %>% 
+  select(mmsi,`2012` = hours_distance_2012, `2013` = hours_distance_2013, `2014` = hours_distance_2014, `2015` = hours_distance_2015, `2016` = hours_distance_2016) %>% 
+  gather(year, distance_hours, - mmsi)
+
+consistently_active_vessels %>% 
+  filter(year != 2016 & year != 2012) %>% 
+  group_by(year) %>% 
+  summarize(distance_hours = sum(distance_hours)) %>% 
+  ggplot()+
+  geom_point(aes(x= year, y = distance_hours))
+  
+```
+
+```{sql, connection = BQ_connection, output.var = "country_codes"}
+SELECT * FROM [ucsb-gfw:vessel_lists.country_codes] 
+```
+
+```{r}
+consistently_active_vessels <- consistently_active_vessels %>% 
+  filter(year != 2016 & year != 2012) %>% 
+  rowwise() %>% 
+  mutate(code = ifelse(nchar(mmsi) == 9,as.numeric(substr(mmsi,1,3)),0)) %>% 
+  left_join(country_codes %>% select(code, country_name), by = "code") %>% 
+  select(-code)
+```
+
+
+```{r}
+plotly::ggplotly(consistently_active_vessels %>% 
+  group_by(year, country_name) %>% 
+    filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland")) %>% 
+  summarize(distance_hours = sum(distance_hours),
+            vessels = n_distinct(mmsi)) %>% 
+  ggplot()+
+  geom_line(aes(x= year, y = distance_hours, color = country_name, group = country_name, key = country_name))+
+  guides(color = FALSE, group = FALSE)+
+    theme_minimal())
+```
+
+
+```{r}
+fuel_prices <- data_frame(year = c("2012","2013","2014","2015"),
+           fuel_price = c(973,934,875,547))
+
+
+consistently_active_vessels <- consistently_active_vessels %>% 
+  left_join(fuel_prices)
+
+```
+
+
+```{r}
+plotly::ggplotly(consistently_active_vessels %>% 
+  group_by(year, country_name) %>% 
+  filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland")) %>% 
+  summarize(distance_hours = sum(distance_hours),
+            fuel_price = mean(fuel_price),
+            vessels = n_distinct(mmsi)) %>% 
+  ggplot()+
+  geom_line(aes(x= fuel_price, y = log(distance_hours/vessels), color = country_name, group = country_name, key = country_name))+
+  guides(color = FALSE, group = FALSE)+
+    theme_minimal())
+```
+
+
+
+## Subsidies
+
+```{r}
+library(docxtractr)
+
+t <- lapply(c(1:6), function(x) read_docx(paste("/Users/JuanMayorga/Box Sync/high_seas_profits/literature/supp_materials_sumalia_2012/Table_S",x,".docx", sep = "")))
+
+t <- lapply(c(1:6), function(x) docx_extract_all_tbls(t[[x]], guess_header = TRUE)[[1]])
+
+t <- lapply(t, setNames, nm = c("Country", "Landings", "Landed Value", "Variable Cost", "Subsidies"))
+
+t <- lapply(c(1:6), function(x) t[[x]][-c(1,2), ] )
+
+subsidies_by_country <- do.call("rbind", t) %>% 
+  mutate_at(vars(-Country), funs(as.numeric(gsub(",", "", .)))) %>% 
+  filter(Country != "Total") %>% 
+  arrange(Country) %>% 
+  mutate(Relative_subsidies = `Subsidies`/abs(`Landed Value`-`Variable Cost`)) %>% 
+  rename(country_name = Country)
+
+
+subsidies_by_country %>% 
+  filter(Relative_subsidies <= 1.5) %>% 
+  top_n(30, `Landed Value`) %>% 
+  ggplot()+
+  geom_bar(aes(x = forcats::fct_reorder(country_name, Relative_subsidies), y = Relative_subsidies), stat = 'identity')+
+  coord_flip()
+```
+
+```{r}
+consistently_active_vessels <- consistently_active_vessels %>% 
+  left_join(subsidies_by_country %>% select(country_name, Relative_subsidies))
+```
+

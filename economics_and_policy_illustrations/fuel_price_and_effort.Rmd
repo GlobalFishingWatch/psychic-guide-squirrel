@@ -5,7 +5,7 @@ output:
   html_document: default
 ---
 
-```{r}
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
 library(tidyverse)
 library(bigrquery)
 library(DBI)
@@ -124,6 +124,11 @@ consistently_active_vessels <- consistently_active_vessels %>%
   select(-code)
 ```
 
+There are `r n_distinct(consistently_active_vessels$mmsi)` that are active in all year and that we can use to test the fuel price vs effort relationship. 
+
+# Plots of effort vs Fuel Price
+
+#### Active Hours vs Time
 
 ```{r fig.width=12}
 plotly::ggplotly(
@@ -147,7 +152,7 @@ consistently_active_vessels <- consistently_active_vessels %>%
   left_join(fuel_prices)
 ```
 
-
+#### Active Hours vs Fuel Price
 ```{r fig.width=12}
 plotly::ggplotly(
   consistently_active_vessels %>% 
@@ -164,6 +169,7 @@ plotly::ggplotly(
 ```
 
 
+#### Distance Traveled vs Fuel Price
 
 ```{r fig.width=12}
 plotly::ggplotly(
@@ -179,6 +185,10 @@ plotly::ggplotly(
     guides(color = FALSE, group = FALSE)+
     theme_minimal())
 ```
+
+#### Distance from shore * Hours vs Fuel Price
+
+
 ```{r fig.width=12}
 plotly::ggplotly(
   consistently_active_vessels %>% 
@@ -194,15 +204,8 @@ plotly::ggplotly(
     theme_minimal())
 ```
 
-```{r}
-consistently_active_vessels %>% 
-  group_by(country_name, year) %>% 
-  summarise(hours = sum(hours),
-            distance = sum(distance),
-            distancehours = sum(distancehours))
-```
 
-## Subsidies
+# Subsidies
 
 ```{r}
 library(docxtractr)
@@ -246,8 +249,10 @@ subsidies_by_country %>%
   arrange(desc(Landings))
 ```
 
-# Test slopes
+# Slopes vs subsidies
 
+
+#### Regressing active hours vs fuel price
 ```{r}
 fits <- consistently_active_vessels %>% 
   filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies)) %>% 
@@ -263,11 +268,47 @@ plotly::ggplotly(consistently_active_vessels %>%
   filter(term == "fuel_price") %>% 
   select(country_name, slope = estimate)) %>% 
   ggplot()+
-  geom_point(aes(x = subsidies, y = slope, key = country_name))+
-  geom_point(aes(x = subsidies, y = slope, key = country_name),color = 'red', data = . %>% filter(country_name == "Argentina")))
+  geom_point(aes(x = subsidies, y = slope, key = country_name)))
+  
+```
+
+#### Regressing distance traveled vs fuel price
+```{r}
+fits <- consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies)) %>% 
+  group_by(country_name) %>% 
+  do(fit = lm(distance ~ fuel_price , data = .))
+
+plotly::ggplotly(consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies) & country_name != "Nicaragua") %>% 
+  group_by(country_name) %>% 
+  summarise(subsidies = mean(total_subsidies)) %>% 
+  left_join(fits %>% 
+  tidy(fit) %>% 
+  filter(term == "fuel_price") %>% 
+  select(country_name, slope = estimate)) %>% 
+  ggplot()+
+  geom_point(aes(x = subsidies, y = slope, key = country_name)))
   
 ```
 
 
+#### Regressing distance*hours vs fuel price
+```{r}
+fits <- consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies)) %>% 
+  group_by(country_name) %>% 
+  do(fit = lm(distancehours ~ fuel_price , data = .))
 
-
+plotly::ggplotly(consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies) & country_name != "Nicaragua") %>% 
+  group_by(country_name) %>% 
+  summarise(subsidies = mean(total_subsidies)) %>% 
+  left_join(fits %>% 
+  tidy(fit) %>% 
+  filter(term == "fuel_price") %>% 
+  select(country_name, slope = estimate)) %>% 
+  ggplot()+
+  geom_point(aes(x = subsidies, y = slope, key = country_name)))
+  
+```

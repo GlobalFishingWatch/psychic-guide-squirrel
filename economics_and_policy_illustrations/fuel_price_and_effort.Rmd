@@ -1,13 +1,16 @@
 ---
 title: "effort and fuel"
-output: html_notebook
+output:
+  html_notebook: default
+  html_document: default
 ---
 
-```{r}
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
 library(tidyverse)
 library(bigrquery)
 library(DBI)
 library(rvest)
+library(broom)
 BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
 
 ```
@@ -15,77 +18,99 @@ BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
 # Get the vessels that are active in all years
 
 ```{sql , connection = BQ_connection, output.var = "active_2012_2013" }
-Select 
-a.mmsi mmsi,
-a.hours_distance_2012 hours_distance_2012,
-b.hours_distance_2013 hours_distance_2013
-from
-(SELECT
-  mmsi,
-  sum(hours*distance_from_shore) hours_distance_2012
-FROM
-  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2012-01-01"), TIMESTAMP("2012-12-31"))
-  group by mmsi) a
-inner join (
 SELECT
-  mmsi,
-  sum(hours*distance_from_shore) hours_distance_2013
-FROM
-  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2013-01-01"), TIMESTAMP("2013-12-31"))
-  group by mmsi
-)b 
-on a.mmsi = b.mmsi
-having hours_distance_2012 > 1000 and hours_distance_2013 > 1000
+  a.mmsi mmsi,
+  a.hours_2012 hours_2012,
+  b.hours_2013 hours_2013,
+  a.hours_distance_2012 distancehours_2012,
+  b.hours_distance_2013 distancehours_2013,
+  a.distance_traveled_2012 distance_2012,
+  b.distance_traveled_2013 distance_2013
+FROM (
+  SELECT
+    mmsi,
+    SUM(IF(speed > 1, hours, 0)) hours_2012,
+    SUM(IF(speed > 1, hours*distance_from_shore, 0)) hours_distance_2012,
+    SUM(IF(prev_gapmeters >= 0 ,prev_gapmeters,0)) distance_traveled_2012
+  FROM
+    TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2012-01-01"), TIMESTAMP("2012-12-31"))
+  GROUP BY
+    mmsi) a
+INNER JOIN (
+  SELECT
+    mmsi,
+    SUM(IF(speed > 1, hours, 0)) hours_2013,
+    SUM(IF(speed > 1, hours*distance_from_shore, 0)) hours_distance_2013,
+    SUM(IF(prev_gapmeters >= 0 ,prev_gapmeters,0)) distance_traveled_2013
+  FROM
+    TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2013-01-01"), TIMESTAMP("2013-12-31"))
+  GROUP BY
+    mmsi )b
+ON
+  a.mmsi = b.mmsi
+HAVING
+  hours_2012 > 1000
+  AND hours_2013 > 1000
 ```
 
 ```{sql , connection = BQ_connection, output.var = "active_2014_2015" }
-Select 
-a.mmsi mmsi,
-a.hours_distance_2014 hours_distance_2014,
-b.hours_distance_2015 hours_distance_2015
-from
-(SELECT
-  mmsi,
-  sum(hours*distance_from_shore) hours_distance_2014
-FROM
-  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2014-01-01"), TIMESTAMP("2014-12-31"))
-  group by mmsi) a
-inner join (
 SELECT
-  mmsi,
-  sum(hours*distance_from_shore) hours_distance_2015
-FROM
-  TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2015-01-01"), TIMESTAMP("2015-12-31"))
-  group by mmsi
-)b 
-on a.mmsi = b.mmsi
-having hours_distance_2014 > 1000 and hours_distance_2015 > 1000
+  a.mmsi mmsi,
+  a.hours_2014 hours_2014,
+  b.hours_2015 hours_2015,
+  a.hours_distance_2014 distancehours_2014,
+  b.hours_distance_2015 distancehours_2015,
+  a.distance_traveled_2014 distance_2014,
+  b.distance_traveled_2015 distance_2015
+FROM (
+  SELECT
+    mmsi,
+    SUM(IF(speed > 1, hours, 0)) hours_2014,
+    SUM(IF(speed > 1, hours*distance_from_shore, 0)) hours_distance_2014,
+    SUM(IF(prev_gapmeters >= 0 ,prev_gapmeters,0)) distance_traveled_2014
+  FROM
+    TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2014-01-01"), TIMESTAMP("2014-12-31"))
+  GROUP BY
+    mmsi) a
+INNER JOIN (
+  SELECT
+    mmsi,
+    SUM(IF(speed > 1, hours, 0)) hours_2015,
+    SUM(IF(speed > 1, hours*distance_from_shore, 0)) hours_distance_2015,
+    SUM(IF(prev_gapmeters >= 0 ,prev_gapmeters,0)) distance_traveled_2015
+  FROM
+    TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2015-01-01"), TIMESTAMP("2015-12-31"))
+  GROUP BY
+    mmsi )b
+ON
+  a.mmsi = b.mmsi
+HAVING
+  hours_2014 > 1000
+  AND hours_2015 > 1000
 ```
 
 ```{sql , connection = BQ_connection, output.var = "active_2016"}
 SELECT
   mmsi,
-  sum(hours*distance_from_shore) hours_distance_2016
+  SUM(IF(speed > 1, hours, 0)) hours_2016,
+  SUM(IF(speed > 1, hours*distance_from_shore, 0)) distancehours_2016,
+  SUM(IF(prev_gapmeters >= 0 ,prev_gapmeters,0)) distance_2016
 FROM
   TABLE_DATE_RANGE([fao_v2.], TIMESTAMP("2016-01-01"), TIMESTAMP("2016-11-01"))
   group by mmsi
-  having hours_distance_2016 > 1000
+  having hours_2016 > 1000
 ```
 
 ```{r}
 consistently_active_vessels <- active_2016 %>% 
   inner_join(active_2014_2015, by = "mmsi") %>% 
   inner_join(active_2012_2013, by = "mmsi") %>% 
-  select(mmsi,`2012` = hours_distance_2012, `2013` = hours_distance_2013, `2014` = hours_distance_2014, `2015` = hours_distance_2015, `2016` = hours_distance_2016) %>% 
-  gather(year, distance_hours, - mmsi)
+  as_data_frame()
 
-consistently_active_vessels %>% 
-  filter(year != 2016 & year != 2012) %>% 
-  group_by(year) %>% 
-  summarize(distance_hours = sum(distance_hours)) %>% 
-  ggplot()+
-  geom_point(aes(x= year, y = distance_hours))
-  
+consistently_active_vessels <- consistently_active_vessels %>% 
+  gather(key, value, -mmsi) %>%
+  separate(key,c("measure", "year"), sep="_") %>% 
+  spread(measure, value)
 ```
 
 ```{sql, connection = BQ_connection, output.var = "country_codes"}
@@ -94,22 +119,26 @@ SELECT * FROM [ucsb-gfw:vessel_lists.country_codes]
 
 ```{r}
 consistently_active_vessels <- consistently_active_vessels %>% 
-  filter(year != 2016 & year != 2012) %>% 
-  rowwise() %>% 
   mutate(code = ifelse(nchar(mmsi) == 9,as.numeric(substr(mmsi,1,3)),0)) %>% 
   left_join(country_codes %>% select(code, country_name), by = "code") %>% 
   select(-code)
 ```
 
+There are `r n_distinct(consistently_active_vessels$mmsi)` that are active in all year and that we can use to test the fuel price vs effort relationship. 
 
-```{r}
-plotly::ggplotly(consistently_active_vessels %>% 
+# Plots of effort vs Fuel Price
+
+#### Active Hours vs Time
+
+```{r fig.width=12}
+plotly::ggplotly(
+  consistently_active_vessels %>% 
+    filter(year != 2016 & year != 2012) %>% 
   group_by(year, country_name) %>% 
-    filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland")) %>% 
-  summarize(distance_hours = sum(distance_hours),
+  summarize(hours = sum(hours, na.rm = T),
             vessels = n_distinct(mmsi)) %>% 
   ggplot()+
-  geom_line(aes(x= year, y = distance_hours, color = country_name, group = country_name, key = country_name))+
+  geom_line(aes(x= year, y = hours, color = country_name, group = country_name, key = country_name))+
   guides(color = FALSE, group = FALSE)+
     theme_minimal())
 ```
@@ -119,29 +148,64 @@ plotly::ggplotly(consistently_active_vessels %>%
 fuel_prices <- data_frame(year = c("2012","2013","2014","2015"),
            fuel_price = c(973,934,875,547))
 
-
 consistently_active_vessels <- consistently_active_vessels %>% 
   left_join(fuel_prices)
-
 ```
 
-
-```{r}
-plotly::ggplotly(consistently_active_vessels %>% 
-  group_by(year, country_name) %>% 
-  filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland")) %>% 
-  summarize(distance_hours = sum(distance_hours),
-            fuel_price = mean(fuel_price),
-            vessels = n_distinct(mmsi)) %>% 
-  ggplot()+
-  geom_line(aes(x= fuel_price, y = log(distance_hours/vessels), color = country_name, group = country_name, key = country_name))+
-  guides(color = FALSE, group = FALSE)+
+#### Active Hours vs Fuel Price
+```{r fig.width=12}
+plotly::ggplotly(
+  consistently_active_vessels %>% 
+    filter(year != 2016 & year != 2012) %>% 
+    group_by(year, country_name) %>% 
+    #filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland", "Argentina")) %>% 
+    summarize(hours = sum(hours, na.rm = TRUE),
+              fuel_price = mean(fuel_price),
+              vessels = n_distinct(mmsi)) %>% 
+    ggplot()+
+    geom_line(aes(x= fuel_price, y = hours, color = country_name, group = country_name, key = country_name))+
+    guides(color = FALSE, group = FALSE)+
     theme_minimal())
 ```
 
 
+#### Distance Traveled vs Fuel Price
 
-## Subsidies
+```{r fig.width=12}
+plotly::ggplotly(
+  consistently_active_vessels %>% 
+    filter(year != 2016 & year != 2012) %>% 
+    group_by(year, country_name) %>% 
+    #filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland", "Argentina")) %>% 
+    summarize(distance_traveled = sum(distance, na.rm = TRUE),
+              fuel_price = mean(fuel_price),
+              vessels = n_distinct(mmsi)) %>% 
+    ggplot()+
+    geom_line(aes(x= fuel_price, y = distance_traveled, color = country_name, group = country_name, key = country_name))+
+    guides(color = FALSE, group = FALSE)+
+    theme_minimal())
+```
+
+#### Distance from shore * Hours vs Fuel Price
+
+
+```{r fig.width=12}
+plotly::ggplotly(
+  consistently_active_vessels %>% 
+    filter(year != 2016 & year != 2012) %>% 
+    group_by(year, country_name) %>% 
+    #filter(country_name %in% c("China", "Spain", "Taiwan", "Japan", "France", "United States", "South Korea", "Norway","Iceland", "Argentina")) %>% 
+    summarize(distance_hours = sum(distancehours, na.rm = TRUE),
+              fuel_price = mean(fuel_price),
+              vessels = n_distinct(mmsi)) %>% 
+    ggplot()+
+    geom_line(aes(x= fuel_price, y = distance_hours, color = country_name, group = country_name, key = country_name))+
+    guides(color = FALSE, group = FALSE)+
+    theme_minimal())
+```
+
+
+# Subsidies
 
 ```{r}
 library(docxtractr)
@@ -159,7 +223,12 @@ subsidies_by_country <- do.call("rbind", t) %>%
   filter(Country != "Total") %>% 
   arrange(Country) %>% 
   mutate(Relative_subsidies = `Subsidies`/abs(`Landed Value`-`Variable Cost`)) %>% 
-  rename(country_name = Country)
+  rename(country_name = Country) %>% 
+  mutate(country_name = replace(country_name, country_name == "USA", "United States"),
+                     country_name = replace(country_name, country_name == "China Main", "China"),
+                     country_name = replace(country_name, country_name == "UK", "United Kingdom"),
+                     country_name = replace(country_name, country_name == "Russian Fed", "Russia"),
+                     country_name = replace(country_name, country_name == "Korea Rep", "South Korea"))
 
 
 subsidies_by_country %>% 
@@ -172,6 +241,74 @@ subsidies_by_country %>%
 
 ```{r}
 consistently_active_vessels <- consistently_active_vessels %>% 
-  left_join(subsidies_by_country %>% select(country_name, Relative_subsidies))
+  left_join(subsidies_by_country %>% 
+              select(country_name, total_subsidies = Subsidies, relative_subsidies = Relative_subsidies))
+
+subsidies_by_country %>% 
+  anti_join(consistently_active_vessels) %>% 
+  arrange(desc(Landings))
 ```
 
+# Slopes vs subsidies
+
+
+#### Regressing active hours vs fuel price
+```{r}
+fits <- consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies)) %>% 
+  group_by(country_name) %>% 
+  do(fit = lm(hours ~ fuel_price , data = .))
+
+plotly::ggplotly(consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies) & country_name != "Nicaragua") %>% 
+  group_by(country_name) %>% 
+  summarise(subsidies = mean(total_subsidies)) %>% 
+  left_join(fits %>% 
+  tidy(fit) %>% 
+  filter(term == "fuel_price") %>% 
+  select(country_name, slope = estimate)) %>% 
+  ggplot()+
+  geom_point(aes(x = subsidies, y = slope, key = country_name)))
+  
+```
+
+#### Regressing distance traveled vs fuel price
+```{r}
+fits <- consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies)) %>% 
+  group_by(country_name) %>% 
+  do(fit = lm(distance ~ fuel_price , data = .))
+
+plotly::ggplotly(consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies) & country_name != "Nicaragua") %>% 
+  group_by(country_name) %>% 
+  summarise(subsidies = mean(total_subsidies)) %>% 
+  left_join(fits %>% 
+  tidy(fit) %>% 
+  filter(term == "fuel_price") %>% 
+  select(country_name, slope = estimate)) %>% 
+  ggplot()+
+  geom_point(aes(x = subsidies, y = slope, key = country_name)))
+  
+```
+
+
+#### Regressing distance*hours vs fuel price
+```{r}
+fits <- consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies)) %>% 
+  group_by(country_name) %>% 
+  do(fit = lm(distancehours ~ fuel_price , data = .))
+
+plotly::ggplotly(consistently_active_vessels %>% 
+  filter(year!= 2012 & year != 2016 & !is.na(country_name) & !is.na(relative_subsidies) & country_name != "Nicaragua") %>% 
+  group_by(country_name) %>% 
+  summarise(subsidies = mean(total_subsidies)) %>% 
+  left_join(fits %>% 
+  tidy(fit) %>% 
+  filter(term == "fuel_price") %>% 
+  select(country_name, slope = estimate)) %>% 
+  ggplot()+
+  geom_point(aes(x = subsidies, y = slope, key = country_name)))
+  
+```

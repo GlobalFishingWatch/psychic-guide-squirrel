@@ -1,8 +1,8 @@
 ---
 title: "effort and fuel"
 output:
-  html_notebook: default
   html_document: default
+  html_notebook: default
 ---
 
 ```{r, echo = FALSE, warning=FALSE, message=FALSE}

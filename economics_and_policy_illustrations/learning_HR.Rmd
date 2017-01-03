@@ -1,0 +1,61 @@
+---
+title: "Learning HR"
+output: html_notebook
+---
+
+
+```{r}
+library(ade4)
+library(adehabitatHR)
+library(tidyverse)
+library(DBI)
+library(bigrquery)
+
+BQ_connection <- dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+```
+
+```{sql connection = BQ_connection, output.var = "colombian_fleet"}
+Select
+mmsi,
+lat,
+lon,
+from 
+[high-seas:clean_effort.clean_effort_with_VC_and_FAO_2015]
+where country == "Colombia"
+```
+
+```{r}
+colombian_fleet <- colombian_fleet %>% 
+  mutate(mmsi = as.factor(mmsi))
+
+coordinates(colombian_fleet) <- ~lon+lat
+
+ud <- kernelUD(colombian_fleet[,1], h="href",grid = 500, extent = 3)
+
+image(ud)
+
+kareas <- getverticeshr(ud, 95)
+library(ggplot2)
+kdareas <- fortify(kareas)
+
+
+ggmap::ggmap(ggmap::get_map(location = c(-95,5,-95,5), zoom = 3,  maptype = c("satellite"), source = 'google'))+
+  geom_polygon(aes(x=long, y=lat, group = group, fill = id, colour = id),
+               alpha = .4, data = kdareas) +
+  theme_bw() +
+  coord_equal()
+```
+
+```{r}
+library(rhr)
+kd1 <- rhrKDE(colombian_vessels[, 2:3])
+
+(href <- rhrHref(colombian_vessels[, rev(2:3)]))
+
+kdehref1 <- rhrKDE(colombian_vessels[, rev(2:3)], h = href$h)
+
+plot(kdehref1)
+
+fortify(kdehref1)
+```
+

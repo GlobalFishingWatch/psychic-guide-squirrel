@@ -369,7 +369,7 @@ removed_vessels_effort_2015 <- removed_vessels_effort_2015 %>%
                mutate(dh = round_date(timestamp, unit = "hours")) %>% 
   arrange(dh)
 
-p <- ggmap::ggmap(ggmap::get_map(location = c(125,30,125,30), zoom = 4,  maptype = c("satellite"), source = 'google'))+
+p <- ggmap::ggmap(ggmap::get_map(location = c(120,30,120,30), zoom = 5,  maptype = c("satellite"), source = 'google'))+
   geom_point(data = removed_vessels_effort_2015,
              aes(x=lon, y=lat, frame = dh), color="red", size = 1)
 

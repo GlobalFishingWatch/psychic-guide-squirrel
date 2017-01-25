@@ -24,6 +24,16 @@ from googleapiclient import discovery
 import oauth2client.client
 
 
+'''
+ee-density-upload.py gs://new-benthos-pipeline/scratch/inital-daily-density/ users/kwurster/initial-daily-density
+
+
+python ee-density-upload-iso3.py gs://david-scratch/iso3_imagecollections/AFG projects/globalfishingwatch/AFG
+
+
+'''
+
+
 _GCS_API = None
 _CREDENTIALS = None
 
@@ -141,6 +151,7 @@ def _upload_params(paths, nodata, dst):
     for p in paths:
 
         name = pp.basename(p)
+        print name
         start_time = datetime.date(
             year=int(name[4:8]),
             month=int(name[9:11]),

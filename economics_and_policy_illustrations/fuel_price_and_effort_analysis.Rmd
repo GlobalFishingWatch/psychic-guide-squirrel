@@ -1,0 +1,743 @@
+---
+title: "Testing the effect of fuel price of fishing effort using GFW"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(modelr)
+library(broom)
+library(DBI)
+library(bigrquery)
+library(trelliscopejs)
+library(rvest)
+library(lubridate)
+library(googleCloudStorageR)
+
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+```
+
+This analysis looks at the question: How does changes in fuel price affect the observed fishing effort in GFW?. This analysis is motivated by the fact that global fuel prices have decreased by ~70% from 2012 to 2016.
+
+## 1. Get fuel price
+
+We will use daily global prices of Marine Diesel Oil ($/MT) obtained from the [BUNKER INDEX](http://www.bunkerindex.com/prices/bixfree.php?priceindex_id=4) website and average them across month and weeks for our analysis. 
+
+```{r scrape_fuel_price, echo = FALSE}
+years <- c(2013,2014,2015,2016)
+
+year_month_indexes <- purrr::map(years, ~seq(as.numeric(substr(.x,3,4))*100 + 1,as.numeric(substr(.x,3,4))*100 + 12, by = 1)) %>% 
+  unlist()
+
+get_daily_prices <- function(year_month_indexes){
+  
+  url <-
+    paste("http://www.bunkerindex.com/prices/bixfree_",
+    year_month_indexes[[1]],
+    ".php?priceindex_id=4",
+    sep = "")
+  
+  table <- url %>%
+    read_html() %>%
+    html_nodes(xpath = '//*[@id="center"]/table[2]') %>%
+    html_table(fill = TRUE)
+  
+  table[[1]] %>%
+    slice(5:n()) %>%
+    select(date = X1, price = X2) %>%
+    filter(!is.na(price)) %>%
+    head(-1)
+}
+
+daily_fuel_prices <- purrr::map_df(year_month_indexes, get_daily_prices)  
+
+write_csv(daily_fuel_prices, path = "saved_files/daily_fuel_prices.csv")
+
+daily_fuel_prices <- read_csv("saved_files/daily_fuel_prices.csv")
+
+daily_fuel_prices <- daily_fuel_prices %>% 
+  mutate(date = lubridate::ymd(date),
+         fuel_price = as.numeric(price)) %>% 
+  group_by(date) %>% 
+  summarise(fuel_price = mean(fuel_price, na.rm = T)) %>% 
+  arrange(date)
+
+monthly_fuel_price <- daily_fuel_prices %>% 
+  mutate(date = round_date(date, "month")) %>% 
+  group_by(date) %>% 
+  summarize(fuel_price = mean(fuel_price, na.rm = T)) %>% 
+  ungroup() %>% 
+  mutate(lagged_fuel_price = lag(fuel_price, 1L))
+
+weekly_fuel_price <- daily_fuel_prices %>% 
+  group_by(date = cut(date, "week")) %>% 
+  summarize(fuel_price = mean(fuel_price, na.rm = T)) %>% 
+  ungroup() %>% 
+  select(date, fuel_price) %>% 
+  mutate(date = date(date),
+         lagged_fuel_price = lag(fuel_price, 1L))
+```
+
+```{r fuel_price_plots, echo = FALSE}
+daily_fuel_prices %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = fuel_price)) +
+  geom_path() +
+  ggtitle("Daily Marine Diesel Oil (MDO) prices ($/MT) from 2012 to 2016") +
+  xlab("") +
+  theme_minimal()
+
+weekly_fuel_price %>% 
+  ggplot(aes(x = date, y = fuel_price)) +
+  geom_line() +
+  ggtitle("weekly Marine Diesel Oil (MDO) prices ($/MT) from 2012 to 2016") +
+  xlab("") +
+  theme_minimal()
+
+monthly_fuel_price %>% 
+  ggplot(aes(x = date, y = fuel_price)) +
+  geom_line() +
+  ggtitle("Monthly Marine Diesel Oil (MDO) prices ($/MT) from 2012 to 2016") +
+  xlab("") +
+  theme_minimal()
+```
+
+## 2. Selecting vessel sample
+
+To obtain the adecuate sample of vessels such that we can control for increase coverage and AIS use, we need to select vessels that were active during the entire time period (2012-2016).
+
+```{r get_vessels}
+consistently_active_mmsi <- src_bigquery(project = "ucsb-gfw", dataset = "fao_v2") %>% 
+  tbl("all_years_clean_effort") %>% 
+  filter(speed > 1) %>% 
+  group_by(year, mmsi, country) %>% 
+  summarize(active_days = exact_count_distinct(date(timestamp))) %>%
+  filter(active_days >= 10) %>% 
+  ungroup() %>% 
+  group_by(mmsi, country) %>% 
+  summarize(years = exact_count_distinct(year)) %>% 
+  filter(years > 4) %>% 
+  select(-years) %>% 
+  collect() %>% 
+  ungroup()
+```
+
+```{r export_consistent_mmsi_to_BQ}
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "fuel_analysis", project = "ucsb-gfw")
+
+if(dbExistsTable(BQ_connection, "consistently_active_mmsi")){
+  dbRemoveTable(BQ_connection, "consistently_active_mmsi") 
+  dbWriteTable(BQ_connection, "consistently_active_mmsi", consistently_active_mmsi %>% select(-country))
+} else {dbWriteTable(BQ_connection, "consistently_active_mmsi", consistently_active_mmsi %>% select(-country))}
+```
+
+In total, this represents `r length(consistently_active_mmsi$mmsi)` vessels, from `r n_distinct(consistently_active_mmsi$country, na.rm = T)` different flag states but mainly from China. 
+
+```{r vessels_by_country}
+consistently_active_mmsi %>% 
+  group_by(country) %>% 
+  count() %>% 
+  arrange(desc(n))
+```
+
+## 3. Estimating effort and fuel consumption for the vessel sample (monthly and weekly estimates)
+
+Then, we use these vessels and aggregate their effort (hours), distance traveled, and fuel consumption by month and week. We exclude effort in 2012 since this is the first year of GFW and data quality is not great. 
+
+### Monthly aggregates all countries combined
+
+```{r get_monthly_effort}
+monthly_effort_by_mmsi <- src_bigquery(project = "ucsb-gfw", dataset = "fao_v2") %>% 
+  tbl("all_years_clean_effort") %>%
+  filter(mmsi %in% consistently_active_mmsi$mmsi, year != 2012) %>% 
+  mutate(month = month(timestamp)) %>% 
+  group_by(year, month, mmsi, country) %>% 
+  summarize(active_hours = sum(ifelse(speed > 1, hours, 0)),
+            distance_traveled = sum(ifelse(prev_gapmeters >= 0, prev_gapmeters,0)),
+            hours_distance = sum(ifelse(speed > 1, distance_from_shore*hours, 0))) %>% 
+  ungroup() %>% 
+  collect(n = Inf) 
+
+monthly_effort_by_mmsi <- monthly_effort_by_mmsi %>% 
+  mutate(date = make_date(year = year, month = month)) %>% 
+  select(date, mmsi, country, active_hours, distance_traveled, hours_distance) %>% 
+  arrange(date) %>% 
+  left_join(monthly_fuel_price) %>% 
+  replace_na(list(country = "unknown")) %>% 
+  filter(active_hours > 0 , distance_traveled > 0, hours_distance > 0 )
+
+monthly_effort_by_mmsi %>% 
+  group_by(country) %>% 
+  summarize(total_active_hours = sum(active_hours),
+            total_distance_traveled = sum(distance_traveled),
+            total_hours_distance = sum(hours_distance)) %>% 
+  arrange(desc(total_active_hours))
+```
+
+
+### Weekly aggregates all countries combined
+
+Trying a similar approach to monthly aggregates (see below) gives a seeminlgy correct answer. However, closer inspection of the results reveals that some dates get parsed as NA (those with week number = 53) which is a problem for joining with the fuel price data
+
+```{r, eval = FALSE, include = FALSE}
+weekly_effort_by_mmsi_RAW <- src_bigquery(project = "ucsb-gfw", dataset = "fao_v2") %>%
+  tbl("all_years_clean_effort") %>%
+  filter(mmsi %in% consistently_active_mmsi$mmsi, year != 2012) %>%
+  mutate(week = week(timestamp)) %>%
+  group_by(year, week, mmsi, country) %>%
+  summarize(active_hours = sum(hours),
+            distance_traveled = sum(ifelse(prev_gapmeters >= 0, prev_gapmeters,0))) %>%
+  ungroup() %>%
+  collect(n = Inf)
+
+weekly_effort_by_mmsi_bad <- weekly_effort_by_mmsi_RAW %>%
+  mutate(date_week = as.Date(paste(year, week, 1, sep = "-"), "%Y-%W-%w")) %>%
+  select(year, week, date_week, mmsi, country, active_hours, distance_traveled) %>%
+  arrange(date_week)
+
+nas <- subset(weekly_effort_by_mmsi_bad, is.na(date_week))
+```
+
+A workaround is to aggregate by day in BQ, save the output to GCS, import the huge table to R and then do the same workflow using `cut()` function to group and summarize by week. Ideally I would like to run and save the query to BQ using `bigrquery` (I know how) and then export the results to gcs using the terminal and executing: `bq extract 'fuel_analysis.daily_effort_by_mmsi' gs://scratch_juan/daily_effort_by_mmsi.csv`.So far no luck on running the terminal from R so for now I read from GCS directly as follows:
+
+
+
+```{r get_weekly_effort}
+googleCloudStorageR::gcs_auth()
+gcs_global_bucket("scratch_juan")
+download_gcs_file <- gcs_get_object("daily_effort_by_mmsi.csv",  saveToDisk = "saved_files/daily_effort_by_mmsi.csv") # this downloads the daily file from GCS
+
+daily_effort_by_mmsi <- read_csv(file = "saved_files/daily_effort_by_mmsi.csv") %>% 
+  arrange(date) 
+
+weekly_effort_by_mmsi <- daily_effort_by_mmsi %>% 
+  group_by(date = cut(date, "week"), mmsi, country) %>% 
+  summarize(active_hours = sum(active_hours, na.rm = T),
+            distance_traveled = sum(distance_traveled, na.rm = T),
+            hours_distance = sum(hours_distance, na.rm = T)) %>% 
+  ungroup() %>% 
+  mutate(date = date(date)) %>% 
+  left_join(weekly_fuel_price) %>% 
+  filter(active_hours > 0 , distance_traveled > 0, hours_distance > 0  )
+
+weekly_effort_by_mmsi <- weekly_effort_by_mmsi %>%
+  filter(!date %in% c(date("2012-12-31"), date("2016-12-26")))
+```
+
+```{r hours_plots_all_countries_combined}
+monthly_effort_by_mmsi %>% 
+  group_by(date) %>%
+  summarise(active_hours = sum(active_hours)) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = active_hours))+
+  geom_line() +
+  geom_smooth()+
+  ggtitle("monthly effort (hours) all countries combined")+
+  theme_minimal()
+
+weekly_effort_by_mmsi %>% 
+  group_by(date) %>%
+  summarise(active_hours = sum(active_hours)) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = active_hours))+
+  geom_line()+
+  geom_smooth()+
+  ggtitle("Weekly effort (hours) all countries combined")+
+  theme_minimal()
+```
+
+
+```{r distance_traveled_plots_all_countries}
+monthly_effort_by_mmsi %>% 
+  group_by(date) %>%
+  summarise(total_distance_traveled = sum(distance_traveled)) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = total_distance_traveled))+
+  geom_line() +
+  geom_smooth()+
+  ggtitle("Distance traveled per month all countries all vessels")+
+  theme_minimal()
+
+weekly_effort_by_mmsi %>% 
+  group_by(date) %>%
+  summarise(total_distance_traveled = sum(distance_traveled)) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = total_distance_traveled)) +
+  geom_line()+
+  geom_smooth()+
+  ggtitle("Distance traveled per week all countries all vessels")+
+  theme_minimal()
+
+```
+```{r hours_distance_plots_all_countries}
+monthly_effort_by_mmsi %>% 
+  group_by(date) %>%
+  summarise(total_hours_distance = sum(hours_distance)) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = total_hours_distance))+
+  geom_line() +
+  geom_smooth() +
+  ggtitle("Hours * distance from shore per month all countries all vessels") +
+  theme_minimal()
+
+weekly_effort_by_mmsi %>% 
+  group_by(date) %>%
+  summarise(total_hours_distance = sum(hours_distance)) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = total_hours_distance)) +
+  geom_line() +
+  geom_smooth() +
+  ggtitle("Hours * distance from shore per week all countries all vessels") +
+  theme_minimal()
+
+```
+Clearly, we can see that there is a strong seasonality pattern that obscures any possible fuel sensitivity. At the same time, lumping Chinese vessels with all other flag states convolutes the signal as Chinese vessels have a strict fishing moratoria during May - September. 
+
+### Monthly Trends by country
+
+#### Distance traveled
+
+```{r trelliscope_monthly_distance_traveled}
+monthly_effort_by_mmsi %>% 
+  group_by(date, country) %>%
+  summarise(total_distance_traveled = sum(distance_traveled)) %>% 
+  arrange(date) %>%
+  ggplot() +
+  geom_path(aes(x = date, y = total_distance_traveled)) +
+  theme_minimal() +
+  geom_smooth(aes(x = date, y = total_distance_traveled)) +
+  trelliscopejs::facet_trelliscope(~country)
+```
+
+
+#### Active hours
+
+```{r trelliscope_monthly_active_hours}
+monthly_effort_by_mmsi %>% 
+  group_by(date, country) %>%
+  summarise(active_hours = sum(active_hours)) %>% 
+  arrange(date) %>%
+  ggplot() +
+  geom_path(aes(x = date, y = active_hours)) +
+  theme_minimal() +
+  geom_smooth(aes(x = date, y = active_hours)) +
+  trelliscopejs::facet_trelliscope(~country)
+```
+
+### Weekly Trends by country 
+
+#### Distance traveled
+```{r trelliscope_weekly_distance_traveled}
+weekly_effort_by_mmsi %>% 
+  group_by(date, country) %>%
+  summarise(total_distance_traveled = sum(distance_traveled)) %>% 
+  arrange(date) %>%
+  ggplot() +
+  geom_path(aes(x = date, y = total_distance_traveled)) +
+  theme_minimal() +
+  geom_smooth(aes(x = date, y = total_distance_traveled)) +
+  trelliscopejs::facet_trelliscope(~country)
+```
+
+#### Active hours
+
+```{r trelliscope_weekly_active_hours}
+weekly_effort_by_mmsi %>% 
+  group_by(date, country) %>%
+  summarise(active_hours = sum(active_hours)) %>% 
+  arrange(date) %>%
+  ggplot() +
+  geom_path(aes(x = date, y = active_hours)) +
+  theme_minimal() +
+  geom_smooth(aes(x = date, y = active_hours)) +
+  trelliscopejs::facet_trelliscope(~country)
+```
+
+
+## 4. Detrending to look for more clear patterns
+
+Lets detrend these time series to account for seasonality (month fixed effects) and for holidays. 
+
+```{r, detrending_functions}
+detrending_function <- function(df, y_var, time_step){
+  if (time_step == "weekly") {
+  foo <- as.formula(paste(y_var,'~', "as.factor(month(date)) + as.logical(week(date) %in% c(52,53,1))"))
+  lm(foo , data = df)
+  }
+  else if (time_step == "monthly") {
+  foo <- as.formula(paste(y_var,'~', "as.factor(month(date))"))
+  lm(foo , data = df)
+  }
+  else
+  {stop("Time step in not valid")}
+}
+
+detrended_plot <- function(detrended_df){
+  ggplot(detrended_df) +
+    geom_path(aes(x = date, y = residuals)) +
+    geom_smooth(aes(x = date, y = residuals))
+}
+
+fuel_plot <- function(df, var){
+  ggplot(df) +
+    geom_point(aes_string(x = "log(fuel_price)", y =  var)) +
+    geom_smooth(aes_string(x = "log(fuel_price)", y = var))
+}
+
+get_fuel_coefs <- function(df, y_var, time_step){
+  if (time_step == "weekly") {
+    foo <- as.formula(paste(y_var, "~", "factor(lubridate::month(date)) +  as.logical(week(date) %in% c(52,53,1)) + log(fuel_price)"))
+    broom::tidy(lm(foo , data = df))
+  }
+  else if (time_step == "monthly") {
+    foo <- as.formula(paste(y_var, "~", "factor(lubridate::month(date)) + log(fuel_price)"))
+    broom::tidy(lm(foo , data = df))
+  }
+  else{stop("Time step not valid")}
+}
+```
+
+### Weekly detrended patterns
+
+#### Distance traveled
+
+```{r create_nested_weekly_df}
+nested_weekly_df <- weekly_effort_by_mmsi %>%
+  filter(!is.na(country)) %>% 
+  group_by(date, country) %>% 
+  summarise(fuel_price = mean(fuel_price),
+            distance_traveled = sum(distance_traveled, na.rm = T),
+            active_hours = sum(active_hours, na.rm = T),
+            hours_distance = sum(hours_distance, na.rm = T)) %>% 
+  ungroup() %>% 
+  group_by(country) %>% 
+  nest()
+```
+
+```{r weekly_detrending_for_distance_traveled}
+detrended_weekly_distance_traveled <- nested_weekly_df %>% 
+  mutate(detrended_model = map(data, detrending_function, y_var = "distance_traveled", time_step = "weekly"),
+         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+         detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
+         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(distance_traveled)"),
+         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(distance_traveled)", time_step = "weekly"))
+
+detrended_weekly_distance_traveled %>%
+  trelliscopejs::trelliscope(name = "detrended distance traveled")
+
+detrended_weekly_distance_traveled %>%
+  trelliscopejs::trelliscope(name = "detrended distance traveled", panel_col = "fuel_plots")
+
+detrended_weekly_distance_traveled %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  ggplot(aes(x = country, y = estimate, color = estimate > 0))+
+  geom_point() +
+  coord_flip()
+
+detrended_weekly_distance_traveled %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  arrange(estimate)
+
+```
+
+#### Active hours
+
+```{r weekly_detrending_for_active_hours}
+detrended_weekly_active_hours <- nested_weekly_df %>% 
+  mutate(detrended_model = map(data, detrending_function, y_var = "active_hours", time_step = "weekly"),
+         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+         detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
+         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(active_hours)"),
+         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(active_hours)", time_step = "weekly"))
+
+detrended_weekly_active_hours %>%
+  trelliscopejs::trelliscope(name = "detrended active_hours")
+
+detrended_weekly_distance_traveled %>%
+  trelliscopejs::trelliscope(name = "detrended distance traveled", panel_col = "fuel_plots")
+
+detrended_weekly_active_hours %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  ggplot(aes(x = country, y = estimate, color = estimate > 0))+
+  geom_point() +
+  coord_flip()
+
+detrended_weekly_active_hours %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  arrange(estimate)
+```
+#### Hours distance
+
+```{r weekly_detrending_for_hours_distance}
+detrended_weekly_hours_distance <- nested_weekly_df %>% 
+  mutate(detrended_model = map(data, detrending_function, y_var = "hours_distance", time_step = "weekly"),
+         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+         detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
+         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(hours_distance)"),
+         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(hours_distance)", time_step = "weekly"))
+
+detrended_weekly_hours_distance %>%
+  trelliscopejs::trelliscope(name = "detrended hours distance")
+
+detrended_weekly_hours_distance %>%
+  trelliscopejs::trelliscope(name = "detrended hours distance", panel_col = "fuel_plots")
+
+detrended_weekly_hours_distance %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  ggplot(aes(x = country, y = estimate, color = estimate > 0))+
+  geom_point() +
+  coord_flip()
+
+detrended_weekly_hours_distance %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  arrange(estimate)
+```
+
+### Monthly detrended patterns
+
+```{r create_nested_monthly_df}
+nested_monthly_df <- monthly_effort_by_mmsi %>%
+  filter(!is.na(country)) %>% 
+  group_by(date, country) %>% 
+  summarise(fuel_price = mean(fuel_price),
+            distance_traveled = sum(distance_traveled, na.rm = T),
+            active_hours = sum(active_hours, na.rm = T), 
+            hours_distance = sum(hours_distance, na.rm = T)) %>% 
+  ungroup() %>% 
+  group_by(country) %>% 
+  nest()
+```
+
+#### Distance Traveled 
+```{r monthly_detrending_for_distance_traveled}
+detrended_monthly_distance_traveled <- nested_monthly_df %>% 
+  mutate(detrended_model = map(data, detrending_function, y_var = "distance_traveled", time_step = "monthly"),
+         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+         detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
+         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(distance_traveled)"),
+         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(distance_traveled)", time_step = "monthly"))
+
+detrended_monthly_distance_traveled %>%
+  trelliscopejs::trelliscope(name = "detrended distance traveled")
+
+detrended_monthly_distance_traveled %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  ggplot(aes(x = country, y = estimate, color = estimate > 0))+
+  geom_point() +
+  coord_flip()
+
+detrended_monthly_distance_traveled %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) 
+```
+
+
+#### Active hours
+
+```{r monthly_detrending_for_active_hours}
+detrended_monthly_active_hours <- nested_monthly_df %>% 
+  mutate(detrended_model = map(data, detrending_function, y_var = "active_hours", time_step = "monthly"),
+         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+         detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
+         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(active_hours)"),
+         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(active_hours)", time_step = "monthly"))
+
+detrended_monthly_active_hours %>%
+  trelliscopejs::trelliscope(name = "detrended active_hours", panel_col = "fuel_plots")
+
+detrended_monthly_active_hours %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) 
+```
+
+#### Hours distance
+
+```{r monthly_detrending_for_hours_distance}
+detrended_monthly_hours_distance <- nested_monthly_df %>% 
+  mutate(detrended_model = map(data, detrending_function, y_var = "hours_distance", time_step = "monthly"),
+         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+         detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
+         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(hours_distance)"),
+         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(hours_distance)", time_step = "monthly"))
+
+detrended_monthly_hours_distance %>%
+  trelliscopejs::trelliscope(name = "detrended active_hours", panel_col = "fuel_plots")
+
+detrended_monthly_hours_distance %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) 
+```
+
+## 5. Fixed Effects regression
+
+### Active hours
+
+```{r monthly_hours_model}
+monthly_hours_model = lm(log(active_hours) ~ factor(country) + factor(month(date)) + log(fuel_price), data = monthly_effort_by_mmsi)
+
+monthly_hours_model_results <- tidy(monthly_hours_model)
+
+controlled_monthly_hours <- monthly_effort_by_mmsi %>% 
+  add_predictions(monthly_hours_model) %>% 
+  mutate(controlled_hours = log(active_hours) - (pred - monthly_hours_model_results$estimate[monthly_hours_model_results$term == "log(fuel_price)"]*log(fuel_price))) 
+  
+controlled_monthly_hours %>% 
+  ggplot() +
+  geom_point(aes(x = log(fuel_price), y = controlled_hours)) +
+  geom_smooth(aes(x = log(fuel_price), y = controlled_hours))
+
+```
+
+```{r weekly_hours_model}
+weekly_hours_model = lm(log(active_hours) ~ factor(country) + factor(month(date)) +  as.logical(week(date) %in% c(52,53,1)) + log(fuel_price), data = weekly_effort_by_mmsi)
+
+weekly_hours_model_results <- tidy(weekly_hours_model)
+
+controlled_weekly_hours <- weekly_effort_by_mmsi %>% 
+  add_predictions(weekly_hours_model) %>% 
+  mutate(controlled_hours = log(active_hours) - (pred - weekly_hours_model_results$estimate[weekly_hours_model_results$term == "log(fuel_price)"]*log(fuel_price)))
+
+controlled_weekly_hours %>% 
+  ggplot() +
+  geom_point(aes(x = log(fuel_price), y = controlled_hours)) +
+  geom_smooth(aes(x = log(fuel_price), y = controlled_hours))
+
+
+```
+
+### Distance traveled
+
+```{r monthly_distance_model}
+monthly_distance_model = lm(log(distance_traveled) ~ factor(country) + factor(month(date)) + log(fuel_price), data = monthly_effort_by_mmsi)
+
+monthly_distance_model_results <- tidy(monthly_distance_model)
+
+controlled_montly_distance <- monthly_effort_by_mmsi %>% 
+  add_predictions(monthly_distance_model) %>% 
+  mutate(controlled_distance = log(distance_traveled) - (pred - monthly_distance_model_results$estimate[monthly_distance_model_results$term == "log(fuel_price)"]*log(fuel_price)))
+
+controlled_montly_distance %>% 
+  ggplot() +
+  geom_point(aes(x = log(fuel_price), y = controlled_distance)) +
+  geom_smooth(aes(x = log(fuel_price), y = controlled_distance))
+
+lm(controlled_distance ~ log(fuel_price), data = controlled_montly_distance)
+```
+
+```{r weekly_distance_model}
+weekly_distance_model = lm(log(distance_traveled) ~ factor(country) + factor(month(date)) +  as.logical(week(date) %in% c(52,53,1)) + log(fuel_price), data = weekly_effort_by_mmsi)
+
+weekly_distance_model_results <- tidy(weekly_distance_model)
+
+controlled_weekly_distance <- weekly_effort_by_mmsi %>% 
+  add_predictions(weekly_distance_model) %>% 
+  mutate(controlled_distance = log(distance_traveled) - (pred - weekly_distance_model_results$estimate[weekly_distance_model_results$term == "log(fuel_price)"]*log(fuel_price)))
+
+controlled_weekly_distance %>% 
+  ggplot() +
+  geom_point(aes(x = log(fuel_price), y = controlled_distance)) +
+  geom_smooth(aes(x = log(fuel_price), y = (controlled_distance)))
+```
+
+### Hours * Distance 
+
+```{r monthly_hours_distance_model}
+monthly_hours_distance_model = lm(log(hours_distance) ~ factor(country) + factor(month(date)) + log(fuel_price), data = monthly_effort_by_mmsi)
+
+monthly_hours_distance_model_results <- tidy(monthly_hours_distance_model)
+
+controlled_montly_hours_distance <- monthly_effort_by_mmsi %>% 
+  add_predictions(monthly_hours_distance_model) %>% 
+  mutate(controlled_hours_distance = log(hours_distance) - (pred - monthly_hours_distance_model_results$estimate[monthly_hours_distance_model_results$term == "log(fuel_price)"]*log(fuel_price)))
+
+controlled_montly_hours_distance %>% 
+  ggplot() +
+  geom_point(aes(x = log(fuel_price), y = controlled_hours_distance)) +
+  geom_smooth(aes(x = log(fuel_price), y = controlled_hours_distance))
+
+lm(controlled_hours_distance ~ log(fuel_price), data = controlled_montly_hours_distance)
+```
+
+```{r weekly_hours_distance_model}
+weekly_hours_distance_model = lm(log(hours_distance) ~ factor(country) + factor(month(date)) +  as.logical(week(date) %in% c(52,53,1)) + log(fuel_price), data = weekly_effort_by_mmsi )
+
+weekly_hours_distance_model_results <- tidy(weekly_hours_distance_model)
+
+controlled_weekly_hours_distance <- weekly_effort_by_mmsi %>% 
+  add_predictions(weekly_hours_distance_model) %>% 
+  mutate(controlled_hours_distance = log(hours_distance) - (pred - weekly_hours_distance_model_results$estimate[weekly_hours_distance_model_results$term == "log(fuel_price)"]*log(fuel_price)))
+
+controlled_weekly_hours_distance %>% 
+  ggplot() +
+  geom_point(aes(x = log(fuel_price), y = controlled_hours_distance)) +
+  geom_smooth(aes(x = log(fuel_price), y = controlled_hours_distance))
+
+lm(controlled_hours_distance ~ log(fuel_price), data = controlled_weekly_hours_distance)
+```
+
+
+[Fuel price elasticities in the U.S. combination trucking sector](http://www.sciencedirect.com/science/article/pii/S1361920915000383)
+
+
+# Subsidies
+
+```{r}
+library(docxtractr)
+
+tables <- list.files("/Users/JuanMayorga/Box Sync/high_seas_profits/literature/supp_materials_sumalia_2012/", full.names = T)
+
+subsidies_by_country <- tables %>% 
+ map(read_docx) %>%
+  map(docx_extract_all_tbls, guess_header = TRUE) %>% 
+  unlist(recursive = FALSE) %>% 
+  map_df(slice, -c(1,2)) %>% 
+  setNames(nm = c("country", "Landings", "landed_value", "variable_cost", "subsidies")) %>% 
+  filter(country != "Total") %>%
+  mutate_at(vars(-country), funs(as.numeric(gsub(",","",.)))) %>% 
+  arrange(country) %>%
+  mutate(relative_subsidies = subsidies/abs(landed_value - variable_cost)) %>%
+  mutate(country = replace(country, country == "USA", "United States"),
+                     country = replace(country, country == "China Main", "China"),
+                     country = replace(country, country == "UK", "United Kingdom"),
+                     country = replace(country, country == "Russian Fed", "Russia"),
+                     country = replace(country, country == "Korea Rep", "South Korea"))
+
+
+subsidies_by_country %>%
+  filter(relative_subsidies <= 1.5) %>%
+  top_n(30, landed_value) %>%
+  ggplot()+
+  geom_bar(aes(x = forcats::fct_reorder(country, relative_subsidies), y = relative_subsidies), stat = 'identity')+
+  coord_flip()
+```
+
+## Slopes vs subsidies
+
+```{r}
+plotly::ggplotly(
+detrended_weekly_distance_traveled %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  left_join(subsidies_by_country) %>% 
+  ggplot(aes(x = relative_subsidies, y = estimate, key = country))+
+  geom_point()
+)
+
+
+plotly::ggplotly(
+detrended_monthly_distance_traveled %>% 
+  unnest(fuel_coefs) %>% 
+  filter(term == "log(fuel_price)", p.value < 0.05) %>% 
+  left_join(subsidies_by_country) %>% 
+  ggplot(aes(x = relative_subsidies, y = estimate, key = country))+
+  geom_point()
+)
+```
+

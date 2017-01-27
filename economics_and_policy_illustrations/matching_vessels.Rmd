@@ -1,0 +1,260 @@
+---
+title: "Matching vessels"
+author: "Juan S. Mayorga"
+date: "January 25, 2017"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(bigrquery)
+library(lubridate)
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+
+```
+
+# NORWAY
+```{r}
+norway_registry <- read_csv("saved_files/norway_registry.csv") %>% 
+  mutate(date1 = lubridate::dmy(date1),
+         date2 = lubridate::dmy(date2))
+```
+
+```{r}
+norway_registry %>% 
+  filter(year(date2) == "2016") %>% 
+  ggplot()+
+  geom_point(aes(x = length, y =  power))
+```
+
+
+### Match 2016 vessels
+
+```{sql connection = BQ_connection, output.var = "GFW_norwegian_vessels_2016"}
+Select
+mmsi, 
+shipname,
+callsign,
+training_length
+from 
+vessel_lists.2016_fishing_vessel_info
+where country_name == "Norway" and callsign is not null
+```
+
+```{r}
+matched_2016 <- GFW_norwegian_vessels_2016 %>% 
+  left_join(norway_registry) %>% 
+  mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
+
+matched_2016_clean <- matched_2016 %>% 
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+
+write_csv(x = matched_2016_clean, "matched_2016_clean.csv")
+```
+
+### Match 2015 vessels
+
+```{sql connection = BQ_connection, output.var = "GFW_norwegian_vessels_2015"}
+Select
+mmsi, 
+shipname,
+callsign,
+training_length
+from 
+vessel_lists.2015_fishing_vessel_info
+where country_name == "Norway" and callsign is not null
+```
+
+```{r}
+matched_2015 <- GFW_norwegian_vessels_2015 %>% 
+  left_join(norway_registry) %>% 
+  mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
+
+matched_2015_clean <- matched_2015 %>% 
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+
+write_csv(x = matched_2015_clean, "matched_2015_clean.csv")
+```
+
+### Match 2014 vessels
+
+```{sql connection = BQ_connection, output.var = "GFW_norwegian_vessels_2014"}
+Select
+mmsi, 
+shipname,
+callsign,
+training_length
+from 
+vessel_lists.2014_fishing_vessel_info
+where country_name == "Norway" and callsign is not null
+```
+
+```{r}
+matched_2014 <- GFW_norwegian_vessels_2014 %>% 
+  left_join(norway_registry) %>% 
+  mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
+
+matched_2014_clean <- matched_2014 %>% 
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+
+write_csv(x = matched_2014_clean, "matched_2014_clean.csv")
+```
+
+### Match 2013 vessels
+
+```{sql connection = BQ_connection, output.var = "GFW_norwegian_vessels_2013"}
+Select
+mmsi, 
+shipname,
+callsign,
+training_length
+from 
+vessel_lists.2013_fishing_vessel_info
+where country_name == "Norway" and callsign is not null
+```
+
+```{r}
+matched_2013 <- GFW_norwegian_vessels_2013 %>% 
+  left_join(norway_registry) %>% 
+  mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
+
+matched_2013_clean <- matched_2013 %>% 
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+
+write_csv(x = matched_2013_clean, "matched_2013_clean.csv")
+```
+
+### Match 2012 vessels
+
+```{sql connection = BQ_connection, output.var = "GFW_norwegian_vessels_2012"}
+Select
+mmsi, 
+shipname,
+callsign,
+training_length
+from 
+vessel_lists.2012_fishing_vessel_info
+where country_name == "Norway" and callsign is not null
+```
+
+```{r}
+matched_2012 <- GFW_norwegian_vessels_2012 %>% 
+  left_join(norway_registry) %>% 
+  mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
+
+matched_2012_clean <- matched_2012 %>% 
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+
+write_csv(x = matched_2012_clean, "matched_2012_clean.csv")
+```
+
+# U.S
+
+```{r}
+us_info <- read_csv("saved_files/Vessels_in_US_EEZs.csv") 
+
+table(us_info$country_name)
+
+us_vessels <- us_info %>% 
+  filter(country_name == "United States") %>% 
+  select(country_name, 
+         shipname = `Vessel Name`, 
+         mmsi, 
+         AIS_callsign, 
+         imo_number = `IMO Number`, 
+         expert_label,
+         nn_max_label_all, 
+         nn_max_score_all,  
+         vessel_service = `Vessel Service`, 
+         registered_gross_ton = `Registered Gross Tons`,
+         ITC_gross_ton = `ITC Gross Tons`,
+         registered_length_meters = `Registered Length`,
+         ITC_length_meters = `ITC Length`, 
+         nn_length_meters = nn_average_length_all,
+         engine_horse_power = `Main HP Ahead`) %>% 
+  mutate_at(vars(ITC_length_meters, registered_length_meters), funs(. * 0.3048)) %>% 
+  mutate(engine_KW = engine_horse_power*0.7457)
+
+us_vessels %>% 
+  ggplot(aes(x = registered_length_meters, y = ITC_gross_ton))+
+  geom_point()
+
+
+write_csv(us_vessels, "us_vessels.csv")
+```
+
+
+
+# IATTC
+
+```{sql connection = BQ_connection, output.var = "vids"}
+SELECT
+  b.mmsi mmsi,
+  b.clav_TUVI clav_TUVI,
+  a.rfmo_id as rfmo_id
+FROM ( 
+  SELECT
+    *
+  FROM
+    [world-fishing-827:Registry_matching_sources.CLAV_12_14_2015]
+  WHERE
+    rfmo_name ="IATTC") a
+INNER JOIN (
+  SELECT
+    clav_TUVI,
+    mmsi
+  FROM
+    [world-fishing-827:CLAV_match_results.v7_results]) b
+ON
+  a.clav_TUVI = b.clav_TUVI
+  group by mmsi, clav_TUVI, rfmo_id
+```
+
+```{r}
+all_urls <- map_chr(vids$rfmo_id, ~ paste("https://www.iattc.org/VesselRegister/VesselDetails.aspx?VesNo=",.x ,sep = ""))
+
+variables_of_interest <-  c("Length", "tonnage", "power")
+
+get_data_from_IATTC <- function(rfmo_id){
+  
+  url <- paste("https://www.iattc.org/VesselRegister/VesselDetails.aspx?VesNo=", rfmo_id ,sep = "")
+  
+  table <- url %>%
+  read_html() %>%
+  html_nodes("#DetailsTable td") %>% 
+  html_text()
+  
+  variables <- table[grepl(paste(v_if_interest, collapse = "|"), table)]
+
+  map_chr(variables, ~ table[which(table %in% .x) + 1]) %>% 
+  setNames(variables_of_interest)
+  
+}
+
+rfmos_ids <- vids %>% 
+  filter(!rfmo_id %in% c("9499","15617","8775","12423","11911","5451"))
+
+rfmos_ids <- rfmos_ids$rfmo_id
+
+please_work <- map(rfmos_ids, get_data_from_IATTC) %>% 
+  set_names(rfmos_ids) 
+
+matched_rfmo_ids <- do.call(rbind, please_work) %>% 
+  as.data.frame(id = names(please_work), stringsAsFactors = F) %>% 
+  tibble::rownames_to_column() %>% 
+  rename(rfmo_id = rowname) %>% 
+  mutate_at(vars(-rfmo_id),funs(as.numeric(.))) 
+
+
+
+matched_mmsi <- matched_rfmo_ids %>% 
+  left_join(vids) %>% 
+  select(mmsi, clav_TUVI,rfmo_id, length = Length, tonnage, power)
+  
+write_csv(matched_mmsi, "saved_files/matched_mmsi_IATTC.csv")
+
+matched_mmsi %>% 
+  ggplot()+
+  geom_point(aes(x = length, y = tonnage))
+```
+

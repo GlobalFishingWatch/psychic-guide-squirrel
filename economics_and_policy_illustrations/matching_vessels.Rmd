@@ -47,7 +47,7 @@ matched_2016 <- GFW_norwegian_vessels_2016 %>%
   mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
 
 matched_2016_clean <- matched_2016 %>% 
-  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power, tonnage)
 
 write_csv(x = matched_2016_clean, "matched_2016_clean.csv")
 ```
@@ -71,7 +71,7 @@ matched_2015 <- GFW_norwegian_vessels_2015 %>%
   mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
 
 matched_2015_clean <- matched_2015 %>% 
-  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power, tonnage)
 
 write_csv(x = matched_2015_clean, "matched_2015_clean.csv")
 ```
@@ -95,7 +95,7 @@ matched_2014 <- GFW_norwegian_vessels_2014 %>%
   mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
 
 matched_2014_clean <- matched_2014 %>% 
-  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power, tonnage)
 
 write_csv(x = matched_2014_clean, "matched_2014_clean.csv")
 ```
@@ -119,7 +119,7 @@ matched_2013 <- GFW_norwegian_vessels_2013 %>%
   mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
 
 matched_2013_clean <- matched_2013 %>% 
-  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power, tonnage)
 
 write_csv(x = matched_2013_clean, "matched_2013_clean.csv")
 ```
@@ -143,7 +143,7 @@ matched_2012 <- GFW_norwegian_vessels_2012 %>%
   mutate(normalized_shipname = if_else(shipname == "" | is.na(shipname),name,shipname))
 
 matched_2012_clean <- matched_2012 %>% 
-  select(mmsi, shipname = normalized_shipname, callsign, length, width, power)
+  select(mmsi, shipname = normalized_shipname, callsign, length, width, power, tonnage)
 
 write_csv(x = matched_2012_clean, "matched_2012_clean.csv")
 ```
@@ -211,8 +211,6 @@ ON
 ```
 
 ```{r}
-all_urls <- map_chr(vids$rfmo_id, ~ paste("https://www.iattc.org/VesselRegister/VesselDetails.aspx?VesNo=",.x ,sep = ""))
-
 variables_of_interest <-  c("Length", "tonnage", "power")
 
 get_data_from_IATTC <- function(rfmo_id){

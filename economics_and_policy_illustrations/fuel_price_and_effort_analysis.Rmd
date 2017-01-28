@@ -268,6 +268,13 @@ weekly_effort_by_mmsi %>%
   ggtitle("Distance traveled per week all countries all vessels")+
   theme_minimal()
 
+weekly_effort_by_mmsi %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = distance_traveled)) +
+  geom_point()+
+  geom_smooth()+
+  ggtitle("Distance traveled per week per vessels")+
+  theme_minimal()
 ```
 ```{r hours_distance_plots_all_countries}
 monthly_effort_by_mmsi %>% 
@@ -401,7 +408,7 @@ get_fuel_coefs <- function(df, y_var, time_step){
 
 #### Distance traveled
 
-```{r create_nested_weekly_df}
+```{r create_nested_weekly_df_by_country}
 nested_weekly_df <- weekly_effort_by_mmsi %>%
   filter(!is.na(country)) %>% 
   group_by(date, country) %>% 
@@ -411,17 +418,28 @@ nested_weekly_df <- weekly_effort_by_mmsi %>%
             hours_distance = sum(hours_distance, na.rm = T)) %>% 
   ungroup() %>% 
   group_by(country) %>% 
-  nest()
+  nest(.key = "grouped_data")
+
+nested_weekly_df_by_mmsi <- weekly_effort_by_mmsi %>% 
+  filter(!is.na(country)) %>% 
+  group_by(country) %>% 
+  nest(.key = "ungrouped_data")
+
+nested_weekly_df <- nested_weekly_df %>% 
+  left_join(nested_weekly_df_by_mmsi)
+
+nested_weekly_df
 ```
 
 ```{r weekly_detrending_for_distance_traveled}
 detrended_weekly_distance_traveled <- nested_weekly_df %>% 
-  mutate(detrended_model = map(data, detrending_function, y_var = "distance_traveled", time_step = "weekly"),
-         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+  mutate(detrended_model = map(grouped_data, detrending_function, y_var = "distance_traveled", time_step = "weekly"),
+         residuals = purrr::map2(grouped_data, detrended_model, add_residuals, "residuals"),
          detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
-         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(distance_traveled)"),
-         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(distance_traveled)", time_step = "weekly"))
+         fuel_plots = trelliscopejs::map_plot(grouped_data, fuel_plot, var = "log(distance_traveled)"),
+         fuel_coefs = purrr::map(ungrouped_data, get_fuel_coefs, y_var = "log(distance_traveled)", time_step = "weekly"))
 
+        
 detrended_weekly_distance_traveled %>%
   trelliscopejs::trelliscope(name = "detrended distance traveled")
 
@@ -446,11 +464,11 @@ detrended_weekly_distance_traveled %>%
 
 ```{r weekly_detrending_for_active_hours}
 detrended_weekly_active_hours <- nested_weekly_df %>% 
-  mutate(detrended_model = map(data, detrending_function, y_var = "active_hours", time_step = "weekly"),
-         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+  mutate(detrended_model = map(grouped_data, detrending_function, y_var = "active_hours", time_step = "weekly"),
+         residuals = purrr::map2(grouped_data, detrended_model, add_residuals, "residuals"),
          detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
-         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(active_hours)"),
-         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(active_hours)", time_step = "weekly"))
+         fuel_plots = trelliscopejs::map_plot(grouped_data, fuel_plot, var = "log(active_hours)"),
+         fuel_coefs = purrr::map(ungrouped_data, get_fuel_coefs, y_var = "log(active_hours)", time_step = "weekly"))
 
 detrended_weekly_active_hours %>%
   trelliscopejs::trelliscope(name = "detrended active_hours")
@@ -474,11 +492,11 @@ detrended_weekly_active_hours %>%
 
 ```{r weekly_detrending_for_hours_distance}
 detrended_weekly_hours_distance <- nested_weekly_df %>% 
-  mutate(detrended_model = map(data, detrending_function, y_var = "hours_distance", time_step = "weekly"),
-         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+  mutate(detrended_model = map(grouped_data, detrending_function, y_var = "hours_distance", time_step = "weekly"),
+         residuals = purrr::map2(grouped_data, detrended_model, add_residuals, "residuals"),
          detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
-         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(hours_distance)"),
-         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(hours_distance)", time_step = "weekly"))
+         fuel_plots = trelliscopejs::map_plot(grouped_data, fuel_plot, var = "log(hours_distance)"),
+         fuel_coefs = purrr::map(ungrouped_data, get_fuel_coefs, y_var = "log(hours_distance)", time_step = "weekly"))
 
 detrended_weekly_hours_distance %>%
   trelliscopejs::trelliscope(name = "detrended hours distance")
@@ -511,17 +529,25 @@ nested_monthly_df <- monthly_effort_by_mmsi %>%
             hours_distance = sum(hours_distance, na.rm = T)) %>% 
   ungroup() %>% 
   group_by(country) %>% 
-  nest()
+  nest(.key = "grouped_data")
+
+nested_monthly_df_by_mmsi <- monthly_effort_by_mmsi %>% 
+  filter(!is.na(country)) %>% 
+  group_by(country) %>% 
+  nest(.key = "ungrouped_data")
+
+nested_monthly_df <- nested_monthly_df %>% 
+  left_join(nested_monthly_df_by_mmsi)
 ```
 
 #### Distance Traveled 
 ```{r monthly_detrending_for_distance_traveled}
 detrended_monthly_distance_traveled <- nested_monthly_df %>% 
-  mutate(detrended_model = map(data, detrending_function, y_var = "distance_traveled", time_step = "monthly"),
-         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+  mutate(detrended_model = map(grouped_data, detrending_function, y_var = "distance_traveled", time_step = "monthly"),
+         residuals = purrr::map2(grouped_data, detrended_model, add_residuals, "residuals"),
          detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
-         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(distance_traveled)"),
-         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(distance_traveled)", time_step = "monthly"))
+         fuel_plots = trelliscopejs::map_plot(grouped_data, fuel_plot, var = "log(distance_traveled)"),
+         fuel_coefs = purrr::map(ungrouped_data, get_fuel_coefs, y_var = "log(distance_traveled)", time_step = "monthly"))
 
 detrended_monthly_distance_traveled %>%
   trelliscopejs::trelliscope(name = "detrended distance traveled")
@@ -543,11 +569,11 @@ detrended_monthly_distance_traveled %>%
 
 ```{r monthly_detrending_for_active_hours}
 detrended_monthly_active_hours <- nested_monthly_df %>% 
-  mutate(detrended_model = map(data, detrending_function, y_var = "active_hours", time_step = "monthly"),
-         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+  mutate(detrended_model = map(grouped_data, detrending_function, y_var = "active_hours", time_step = "monthly"),
+         residuals = purrr::map2(grouped_data, detrended_model, add_residuals, "residuals"),
          detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
-         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(active_hours)"),
-         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(active_hours)", time_step = "monthly"))
+         fuel_plots = trelliscopejs::map_plot(grouped_data, fuel_plot, var = "log(active_hours)"),
+         fuel_coefs = purrr::map(ungrouped_data, get_fuel_coefs, y_var = "log(active_hours)", time_step = "monthly"))
 
 detrended_monthly_active_hours %>%
   trelliscopejs::trelliscope(name = "detrended active_hours", panel_col = "fuel_plots")
@@ -561,11 +587,11 @@ detrended_monthly_active_hours %>%
 
 ```{r monthly_detrending_for_hours_distance}
 detrended_monthly_hours_distance <- nested_monthly_df %>% 
-  mutate(detrended_model = map(data, detrending_function, y_var = "hours_distance", time_step = "monthly"),
-         residuals = purrr::map2(data, detrended_model, add_residuals, "residuals"),
+  mutate(detrended_model = map(grouped_data, detrending_function, y_var = "hours_distance", time_step = "monthly"),
+         residuals = purrr::map2(grouped_data, detrended_model, add_residuals, "residuals"),
          detrended_plots = trelliscopejs::map_plot(residuals, detrended_plot),
-         fuel_plots = trelliscopejs::map_plot(data, fuel_plot, var = "log(hours_distance)"),
-         fuel_coefs = purrr::map(data, get_fuel_coefs, y_var = "log(hours_distance)", time_step = "monthly"))
+         fuel_plots = trelliscopejs::map_plot(grouped_data, fuel_plot, var = "log(hours_distance)"),
+         fuel_coefs = purrr::map(ungrouped_data, get_fuel_coefs, y_var = "log(hours_distance)", time_step = "monthly"))
 
 detrended_monthly_hours_distance %>%
   trelliscopejs::trelliscope(name = "detrended active_hours", panel_col = "fuel_plots")

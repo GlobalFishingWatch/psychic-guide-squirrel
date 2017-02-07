@@ -1,0 +1,246 @@
+---
+title: "Re-estimating vessel characteristics"
+author: "Juan S. Mayorga"
+date: "February 1, 2017"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(DBI)
+library(bigrquery)
+library(lubridate)
+library(plotly)
+
+BQ_connection <-  dbConnect(dbi_driver(), dataset = "", project = "ucsb-gfw")
+
+year = 2016
+neural_net_confidence_threshold = 0
+```
+
+This script looks into data available to characterize vessels in `r year`. Specifically, we are concerned with vessel flag state, gear_type, length, tonnage, engine power, and crew size. 
+
+The approach combines vessel information from registries (CLAV, EU, FFA, ITU and CCAMLR lists) and from AIS messages. The following steps summarize the approach:
+
+  - Get the flag state by matching the inner code of the mmsi with the corresponding country code
+  - Get type of fishing from official registries when available (use the most reported type when multiple entries). Fill in data gaps with the results from the neural net where confidence is > `r neural_net_confidence_threshold`
+  - Get length data from official registries when the coeffiecient of variation between reports is < 10%. Complement with the median AIS-reported length as long as CV is also < `r cv_threshold` %
+  - Get power, tonnage, and crew size from official registries when the coeffiecient of variation is < `r cv_threshold` %
+  - Visually inspect the data to look for outliers or erroneous data. Look online to correct outliers when possible.
+  - Make regressions of length - power, length - tonnage and length - crew to charactertize the relationship
+  - Fill in length data gaps using the neural net output 
+  - Extrapolate tonnage, power and crew data using the results from the regression models
+  
+```{sql connection = BQ_connection, output.var = "all_vessels"}
+SELECT
+  a.mmsi mmsi,
+  a.country_name country_name,
+  if(a.nn_max_score > 0.8, a.nn_max_label, NULL) nn_gear_type,
+  a.average_length ais_average_length,
+  a.nn_average_length nn_average_length,
+  b.fishing_label fishing_label,
+  b.length registry_length,
+  b.tonnage registry_tonnage,
+  b.engine_power registry_engine_power,
+  a.active_positions active_positions,
+  IF(c.offshore_hours IS NOT NULL, TRUE, FALSE) offshore
+FROM (
+  SELECT
+    mmsi,
+    country_name,
+    nn_max_label,
+    nn_max_score,
+    training_label,
+    average_length,
+    nn_average_length,
+    active_positions,
+  FROM
+    [world-fishing-827:scratch_david_mmsi_lists.2016_fishing_vessel_info]) a
+LEFT JOIN
+  [world-fishing-827:scratch_david_mmsi_lists.net_training_20170127] b
+ON
+  a.mmsi = b.mmsi
+LEFT JOIN (
+  SELECT
+    mmsi,
+    SUM(hours) total_hours,
+    SUM(IF((eez IS NULL
+          OR eez = 'Antartica'
+          OR eez != country), hours, 0)) offshore_hours,
+  FROM
+    [fao_v2.2016_clean_effort]
+  WHERE
+    mmsi IN (
+    SELECT
+      mmsi
+    FROM
+      [world-fishing-827:scratch_david_mmsi_lists.2016_fishing_vessel_info])
+  GROUP BY
+    mmsi
+  HAVING
+    offshore_hours/total_hours > 0.2)c
+ON
+  a.mmsi = c.mmsi
+WHERE
+  (fishing_label != 'non_fishing'
+    OR fishing_label IS NULL)
+```
+
+```{r}
+corrected_lengths <- read_csv("corrected_mmsi/corrected_lengths.csv")
+corrected_tonnage <- read_csv("corrected_mmsi/corrected_tonnage.csv")
+
+all_vessels <- all_vessels %>% 
+  left_join(corrected_lengths) %>% 
+  left_join(corrected_tonnage) %>% 
+  mutate(registry_length = ifelse(!is.na(correct_length), correct_length, registry_length ),
+         registry_tonnage = ifelse(!is.na(corrected_tonnage), corrected_tonnage, registry_tonnage)) %>% 
+  select(-correct_length, -corrected_tonnage)
+
+all_vessels$registry_engine_power[all_vessels$mmsi == 224103000] = NA
+all_vessels$registry_engine_power[all_vessels$mmsi == 367892000] = NA
+all_vessels$registry_engine_power[all_vessels$mmsi == 367324660] = NA
+
+```
+
+# Data Summary and Visualizations
+
+In total the number of vessels is `r nrow(all_vessels)` of which we have the following coverage:
+
+## Flag State
+
+Of the total, we have `r length(all_vessels$mmsi[all_vessels$country != "Invalid MMSI"])` `r 100*length(all_vessels$mmsi[all_vessels$country != "Invalid MMSI"])/nrow(all_vessels)`% of vessels with flag state. The following table shows the number (and the proportion) of vessels and positions by each flag state in `r year`. In total we have `r nrow(all_vessels)` vessels.'
+
+```{r}
+all_vessels %>% 
+  group_by(country_name) %>% 
+  summarise(vessels = n_distinct(mmsi),
+            positions = sum(active_positions, na.rm = T)) %>% 
+  mutate(p_vessels = 100*vessels/sum(vessels),
+         p_positions = 100*positions/sum(positions)) %>% 
+  arrange(desc(p_positions)) %>% 
+  mutate(p_vessels =  paste("(",as.character(round(p_vessels, digits = 0)),"%)", sep = ""),
+         p_positions =  paste("(",as.character(round(p_positions, digits = 0)),"%)", sep = "")) %>% 
+  unite(vessels, vessels, p_vessels, sep = " ") %>% 
+    unite(positions, positions, p_positions, sep = " ") 
+```
+
+```{r}
+vessels_with_some_data <- all_vessels %>% 
+  filter(!is.na(registry_length) | !is.na(registry_tonnage) | !is.na(registry_engine_power))
+```
+
+If we exclude vessels for which we have no registry information for length, tonnage, or engine power we are left with `r nrow(vessels_with_some_data)` total vessels,  `r 100*length(vessels_with_some_data$mmsi[vessels_with_some_data$country != "Invalid MMSI"])/nrow(vessels_with_some_data)` of them with country info, and they are more even distribution by flag state:
+
+```{r}
+vessels_with_some_data %>% 
+  group_by(country_name) %>% 
+  summarise(vessels = n_distinct(mmsi),
+            positions = sum(active_positions, na.rm = T)) %>% 
+  mutate(p_vessels = 100*vessels/sum(vessels),
+         p_positions = 100*positions/sum(positions)) %>% 
+  arrange(desc(p_positions)) %>% 
+  mutate(p_vessels =  paste("(",as.character(round(p_vessels, digits = 0)),"%)", sep = ""),
+         p_positions =  paste("(",as.character(round(p_positions, digits = 0)),"%)", sep = "")) %>% 
+  unite(vessels, vessels, p_vessels, sep = " ") %>% 
+  unite(positions, positions, p_positions, sep = " ")
+```
+## By gear type
+
+Of the total, we have `r length(all_vessels$mmsi[!is.na(all_vessels$nn_gear_type)])` `r 100*length(all_vessels$mmsi[!is.na(all_vessels$nn_gear_type)])/nrow(all_vessels)`% with gear type. The following table shows the number (and the proportion) of vessels and positions by gear type in `r year`.
+
+```{r}
+all_vessels %>% 
+  group_by(nn_gear_type) %>% 
+  summarise(vessels = n_distinct(mmsi),
+            positions = sum(active_positions, na.rm = T)) %>% 
+  mutate(p_vessels = 100*vessels/sum(vessels),
+         p_positions = 100*positions/sum(positions)) %>% 
+  arrange(desc(p_positions)) %>% 
+  mutate(p_vessels =  paste("(",as.character(round(p_vessels, digits = 0)),"%)", sep = ""),
+         p_positions =  paste("(",as.character(round(p_positions, digits = 0)),"%)", sep = "")) %>% 
+  unite(vessels, vessels, p_vessels, sep = " ") %>% 
+    unite(positions, positions, p_positions, sep = " ") 
+```
+
+Excluding vessels for which we have no registry information for length, tonnage, or engine power we are left with `r nrow(vessels_with_some_data)` vessels, `r 100*length(vessels_with_some_data$mmsi[!is.na(vessels_with_some_data$nn_gear_type)])/nrow(vessels_with_some_data)`% of them with gear type. They are distirbuted as follows:
+
+```{r}
+vessels_with_some_data %>% 
+  group_by(nn_gear_type) %>% 
+  summarise(vessels = n_distinct(mmsi),
+            positions = sum(active_positions, na.rm = T)) %>% 
+  mutate(p_vessels = 100*vessels/sum(vessels),
+         p_positions = 100*positions/sum(positions)) %>% 
+  arrange(desc(p_vessels)) %>% 
+  mutate(p_vessels =  paste("(",as.character(round(p_vessels, digits = 0)),"%)", sep = ""),
+         p_positions =  paste("(",as.character(round(p_positions, digits = 0)),"%)", sep = "")) %>% 
+  unite(vessels, vessels, p_vessels, sep = " ") %>% 
+    unite(positions, positions, p_positions, sep = " ") 
+```
+
+## Distribution of Vessel Characteristics
+
+### Length
+
+```{r}
+vessels_with_some_data %>% 
+  ggplot() +
+  geom_density(aes(x = registry_length), color = 'black', alpha = 0.5) +
+  geom_density(aes(x = ais_average_length), color = 'blue',alpha = 0.5) + 
+  geom_density(aes(x = nn_average_length), color = 'red',alpha = 0.5) +
+  theme_minimal()
+```
+
+### Engine power
+
+```{r}
+vessels_with_some_data %>% 
+  filter(!is.na(nn_gear_type)) %>% 
+  ggplot() +
+  geom_density(aes(x = registry_engine_power, color = nn_gear_type),  alpha = 0.5)+
+  theme_minimal() 
+```
+
+```{r}
+ggplotly(vessels_with_some_data %>% 
+           ggplot() +
+           geom_density(aes(x = registry_tonnage, color = nn_gear_type), alpha = 0.5) +
+           theme_minimal())
+```
+
+
+## Relationships 
+
+### length vs power
+
+```{r}
+ggplotly(
+  vessels_with_some_data %>% 
+  ggplot() +
+  geom_point(aes(x = registry_length, y = registry_engine_power, key = mmsi, color = nn_gear_type))
+)
+```
+
+### length vs tonnage
+
+```{r}
+ggplotly(
+  vessels_with_some_data %>%
+    ggplot() +
+  geom_point(aes(x = registry_length, y = registry_tonnage, key = mmsi, color = nn_gear_type))
+)
+```
+
+## Regressions
+
+
+
+
+
+
+

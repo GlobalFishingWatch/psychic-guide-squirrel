@@ -1,3 +1,6 @@
 .httr-oauth
 .Rhistory
 *.csv
+*.json
+*.tiff
+*.mp4

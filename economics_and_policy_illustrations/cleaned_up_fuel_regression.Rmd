@@ -1,0 +1,536 @@
+---
+title: "Cleaned_up_regression"
+author: "Juan S. Mayorga"
+date: "January 30, 2017"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 5
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(modelr)
+library(broom)
+library(trelliscopejs)
+library(ggseas)
+library(ggsci)
+library(gtable)
+library(grid)
+library(cowplot)
+library(RColorBrewer)
+library(pryr)
+```
+
+
+```{r get_monthly_data}
+monthly_effort_by_mmsi <- readRDS("saved_files/monthly_effort_by_mmsi")
+
+monthly_effort_by_mmsi <- monthly_effort_by_mmsi %>% 
+  group_by(mmsi) %>% 
+  mutate(lagged_distance_traveled = lag(distance_traveled, order_by = mmsi),
+         month = as.factor(month(date, label = TRUE)),
+         country = as.factor(country)) %>% 
+  ungroup() %>% 
+  arrange(date) 
+```
+
+
+```{r get_weekly_data}
+weekly_effort_by_mmsi <- readRDS("saved_files/weekly_effort_by_mmsi")
+
+weekly_effort_by_mmsi <- weekly_effort_by_mmsi %>% 
+  group_by(mmsi) %>% 
+  mutate(lagged_distance_traveled = lag(distance_traveled, order_by = mmsi),
+         month = as.factor(month(date, label = TRUE)),
+         country = as.factor(country),
+         new_year = as.logical(week(date) %in% c(52))) %>% 
+  ungroup() %>% 
+  arrange(date) 
+```
+
+```{r load_references}
+Hughes_elasticity_recent = -0.041
+Hughes_elasticity_past = -0.335
+Havnarek_elasticity = -0.09
+Winebreak_elasticity = 0.005
+```
+
+
+```{r}
+daily_fuel_prices <- read_csv("saved_files/daily_fuel_prices.csv")
+
+daily_fuel_prices <- daily_fuel_prices %>% 
+  mutate(date = lubridate::ymd(date),
+         fuel_price = as.numeric(price)) %>% 
+  group_by(date) %>% 
+  summarise(fuel_price = mean(fuel_price, na.rm = T)) %>% 
+  arrange(date)
+
+monthly_fuel_price <- daily_fuel_prices %>% 
+  mutate(date = round_date(date, "month")) %>% 
+  group_by(date) %>% 
+  summarize(fuel_price = mean(fuel_price, na.rm = T)) %>% 
+  ungroup() %>% 
+  mutate(lagged_fuel_price = lag(fuel_price, 1L))
+
+weekly_fuel_price <- daily_fuel_prices %>% 
+  group_by(date = cut(date, "week")) %>% 
+  summarize(fuel_price = mean(fuel_price, na.rm = T)) %>% 
+  ungroup() %>% 
+  dplyr::select(date, fuel_price) %>% 
+  mutate(date = date(date),
+         lagged_fuel_price = lag(fuel_price, 1L))
+```
+
+## Using distance traveled as dependent variable
+
+#### Visualize data
+
+Fuel prices 
+
+```{r}
+weekly_fuel_price %>% 
+  ggplot(aes(x = date, y = fuel_price)) +
+  geom_line() +
+  ggtitle("weekly Marine Diesel Oil (MDO) prices ($/MT) from 2013 to 2016") +
+  xlab("") +
+  theme_minimal()
+```
+
+Seasonal decomposition of distance traveled time series from 2013 to 2016
+
+```{r decomposition_on_the_fly, eval=FALSE}
+weekly_effort_by_mmsi %>% 
+  group_by(date) %>% 
+  summarize(distance_traveled = sum(distance_traveled)) %>% 
+  ggseas::ggsdc(aes(x = date, y = distance_traveled), 
+                method = 'decompose',
+                type = "additive", 
+                frequency = 52,
+                facet.titles = c("Original series", "Underlying trend",
+                          "Regular seasonal impacts", "Residual randomness") ) +
+  geom_line() +
+  ylab("Distance Traveled") +
+  xlab("Time") +
+  theme_minimal()
+```
+
+
+```{r trelliscope_by_country}
+weekly_effort_by_mmsi %>% 
+  group_by(date, country) %>% 
+  summarize(distance_traveled = sum(distance_traveled)) %>% 
+  ggplot(aes(x = date, y = distance_traveled)) +
+  geom_line(colour = "grey80") +
+  geom_smooth() +
+  theme_minimal() +
+  facet_trelliscope(~ country, self_contained = TRUE)
+```
+
+```{r prepare_data_for_time_series}
+total_distance_by_week <- weekly_effort_by_mmsi %>% 
+  group_by(date) %>% 
+  summarise(distance_traveled = sum(distance_traveled),
+            fuel_price = mean(fuel_price, na.rm = T))
+
+
+weekly_distance_ts <- ts(total_distance_by_week$distance_traveled, start = c(2013, 1), frequency = 52)
+
+weekly_fuel_price_ts <- ts(total_distance_by_week$fuel_price, start = c(2013, 1), frequency = 52)
+
+decomposed_weekly_distance_ts <- decompose(weekly_distance_ts, "additive")
+
+decomposed_distance_df <- data_frame(original_data = as.double(decomposed_weekly_distance_ts$x),
+                                     trend = as.double(decomposed_weekly_distance_ts$trend),
+                                     decomposed_distance = as.double(decomposed_weekly_distance_ts$x) - as.double(decomposed_weekly_distance_ts$seasonal),
+                                     fuel_price = total_distance_by_week$fuel_price,
+                                     date = total_distance_by_week$date)
+```
+
+```{r using_base_r}
+weekly_deseasoned_ts <- ts(as.double(decomposed_weekly_distance_ts$x) - as.double(decomposed_weekly_distance_ts$seasonal),start = c(2013, 1), frequency = 52)/1000000
+
+distance_trend_ts <- decomposed_weekly_distance_ts$trend/1000000
+
+weekly_fuel_price_ts <- ts(total_distance_by_week$fuel_price, start = c(2013, 1), frequency = 52)
+
+fuel_ts_plot2.pryr %<a-%{
+   
+   par(mar = c(4, 4, 4, 5))
+plot(weekly_fuel_price_ts,
+     type = 'l',
+     ylab = "Fuel price ($ per metric ton)",
+     las = 1,
+     col = "navyblue",
+     bty = "u")
+par(new = T)
+plot(weekly_deseasoned_ts,
+     type = 'l',
+     yaxt = 'n',
+     ylab = '',
+     col = "grey80",
+     bty = "n")
+lines(distance_trend_ts,
+     type = 'l',
+     yaxt = 'n',
+     ylab = '',
+     col = "red")
+axis(side = 4, las = 1)
+mtext(side = 4, 'Distance traveled (million km)', line = 3.5)
+legend("bottomleft",bty='n',col=c("navyblue","grey80",2),lty=1,
+       legend=c("Fuel price","Distance traveled (km)","Trend"), cex = .8, xjust = 0.5)
+ } 
+
+fuel_ts_plot2.pryr
+
+```
+
+```{r using_ggplot2}
+p1 <- decomposed_distance_df %>% 
+  ggplot(aes(x = date, y = fuel_price)) +
+  geom_line(color = "navyblue") + 
+  theme(panel.border = element_rect(fill=NA, size=0.5, color = "black",
+                                    linetype="solid"),
+        panel.background = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(hjust = -0.035 ,vjust = 2.12, colour = "navyblue", size = 10),
+        plot.subtitle = element_text(hjust = -0.06 ,vjust = 2.12, colour = "navyblue", size = 10),
+        axis.text.y = element_text(colour = "navyblue", size = 10),
+        axis.text.x = element_text(size = 10),
+        axis.line =   element_blank()) +
+  #ggtitle("Fuel price",subtitle = "($ per metric ton)") + 
+  labs(x = NULL, y = NULL)+
+  scale_y_continuous(breaks  = c(300,500,750,1000), limits = c(300, 1050))
+
+p2 <- decomposed_distance_df %>% 
+  mutate_at(vars(original_data,trend,decomposed_distance), funs(./1000000)) %>% 
+  ggplot(labels = scales::comma) +
+  geom_line(aes(x = date, y = decomposed_distance), color = "grey80") +
+  geom_line(aes(x = date, y = trend), color = "#00A4E6") +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.background = element_blank(),
+        #axis.line.y = element_blank(),
+        plot.title = element_text(hjust = .99 ,vjust=2.12, colour="#00A4E6", size = 10),
+        plot.subtitle = element_text(hjust = .99 ,vjust=2.12, colour="#00A4E6", size = 10),
+        axis.text.y = element_text(colour="#00A4E6", size = 10),
+        axis.text.x = element_text(size = 10),
+        axis.line =   element_blank())+
+  ggtitle("Distance traveled",subtitle =" (million km)") + 
+  labs(x=NULL, y= NULL)+
+  scale_x_date(limits = c(ymd("2013-01-01"),ymd("2016-12-31"))) +
+  scale_y_continuous(breaks  = c(2000,2400,2800, 3200), limits = c(2000,3200))
+
+p1
+p2
+```
+
+```{r hacking_ggplot2}
+# Get the plot grobs
+g1 <- ggplotGrob(p1)
+g2 <- ggplotGrob(p2)
+
+# Get the locations of the plot panels in g1.
+pp <- c(subset(g1$layout, name == "panel", se = t:r))
+
+# Overlap panel for second plot on that of the first plot
+g1 <- gtable_add_grob(g1, g2$grobs[[which(g2$layout$name == "panel")]], pp$t, pp$l, pp$b, pp$l)
+
+# ggplot contains many labels that are themselves complex grob; 
+# usually a text grob surrounded by margins.
+# When moving the grobs from, say, the left to the right of a plot,
+# make sure the margins and the justifications are swapped around.
+# The function below does the swapping.
+# Taken from the cowplot package:
+# https://github.com/wilkelab/cowplot/blob/master/R/switch_axis.R 
+hinvert_title_grob <- function(grob){
+
+# Swap the widths
+widths <- grob$widths
+grob$widths[1] <- widths[3]
+grob$widths[3] <- widths[1]
+grob$vp[[1]]$layout$widths[1] <- widths[3]
+grob$vp[[1]]$layout$widths[3] <- widths[1]
+
+# Fix the justification
+grob$children[[1]]$hjust <- 1 - grob$children[[1]]$hjust 
+grob$children[[1]]$vjust <- 1 - grob$children[[1]]$vjust 
+grob$children[[1]]$x <- unit(1, "npc") - grob$children[[1]]$x
+grob
+}
+
+# Get the y axis from g2 (axis line, tick marks, and tick mark labels)
+index <- which(g2$layout$name == "axis-l")  # Which grob
+yaxis <- g2$grobs[[index]]                  # Extract the grob
+
+# yaxis is a complex of grobs containing the axis line, the tick marks, and the tick mark labels.
+# The relevant grobs are contained in axis$children:
+#   axis$children[[1]] contains the axis line;
+#   axis$children[[2]] contains the tick marks and tick mark labels.
+
+# Second, swap tick marks and tick mark labels
+ticks <- yaxis$children[[2]]
+ticks$widths <- rev(ticks$widths)
+ticks$grobs <- rev(ticks$grobs)
+
+# Third, move the tick marks
+# Tick mark lengths can change. 
+# A function to get the original tick mark length
+# Taken from the cowplot package:
+# https://github.com/wilkelab/cowplot/blob/master/R/switch_axis.R 
+plot_theme <- function(p) {
+plyr::defaults(p$theme, theme_get())
+}
+
+tml <- plot_theme(p1)$axis.ticks.length   # Tick mark length
+ticks$grobs[[1]]$x <- ticks$grobs[[1]]$x - unit(1, "npc") + tml
+
+# Fourth, swap margins and fix justifications for the tick mark labels
+ticks$grobs[[2]] <- hinvert_title_grob(ticks$grobs[[2]])
+
+# Fifth, put ticks back into yaxis
+yaxis$children[[2]] <- ticks
+
+# Put the transformed yaxis on the right side of g1
+g1 <- gtable_add_cols(g1, g2$widths[g2$layout[index, ]$l], pp$r)
+g1 <- gtable_add_grob(g1, yaxis, pp$t, pp$r + 1, pp$b, pp$r + 1, clip = "off", name = "axis-r")
+
+# Labels grob
+left = textGrob(paste("     Fuel Price","($ per metric ton)", sep = "\n"), x = 0, y = 0.5, just = c("left", "top"), gp = gpar(fontsize = 10, col =  "navyblue"))
+right =  textGrob(paste("Distance Traveled", "(million km)    ", sep = "\n"), x = 1, y = 0.5, just = c("right", "top"), gp = gpar(fontsize = 10, col =  "#00A4E6"))
+labs = gTree("Labs", children = gList(left, right))
+
+# New row in the gtable for labels
+height = unit(3, "grobheight", left)
+g1 <- gtable_add_rows(g1, height, 2)  
+
+# Put the label in the new row
+g1 = gtable_add_grob(g1, labs, t = 3, l = 3, r = 5)
+
+# Turn off clipping in the plot panel
+g1$layout[which(g1$layout$name == "panel"), ]$clip = "off"
+
+# Print to PDF
+
+grid.draw(g1) # Copy paste to the console
+```
+
+```{r alternative_plot}
+fuel_ts_plot1 <- decomposed_distance_df %>% 
+  mutate_at(vars(original_data,trend,decomposed_distance), funs(./1000000)) %>% 
+  ggplot(labels = scales::comma) +
+  geom_line(aes(x = date, y = original_data), color = "grey80") +
+  geom_line(aes(x = date, y = trend), color = "red") +
+  geom_line(aes(x = date, y = decomposed_distance, color = (fuel_price))) +
+  theme_minimal() +
+  scale_color_gradient(low = "dodgerblue", high = "navyblue", name = "Fuel price \n ($/MT) \n") +
+  ylab("Weekly distance traveled (million km)") +
+  xlab("") +
+  scale_y_continuous(labels = scales::comma) +
+  theme(legend.title = element_text(size = 9, vjust = 1),
+        legend.margin = margin(10,10,10,0),
+        axis.title.y = element_text(margin = margin(0,20,0,0)))
+```
+
+### 1. Monthly time steps
+
+#### Model specifications:
+######  Model 1.1: Just log-log
+
+$$ ln(\text{distance_traveled}) = \alpha_0 + \alpha_1 ln(\text{fuel_price}) + \epsilon$$
+
+```{r monthly_distance_model_1.2}
+monthly_distance_model_1.1 = lm(log(distance_traveled) ~ log(fuel_price), data = monthly_effort_by_mmsi)
+```
+
+######  Model 1.2: Monthly Log-Log without lags
+
+$$ ln(\text{distance_traveled}) = \alpha_0 + \alpha_1 ln(\text{fuel_price}) + \alpha_2 \text{country} + \alpha_3 \text{month} + \epsilon$$
+
+```{r monthly_distance_model_1.2}
+monthly_distance_model_1.2 = lm(log(distance_traveled) ~ country + month + log(fuel_price), data = monthly_effort_by_mmsi)
+```
+
+######  Model 1.3: Monthly log-log with lagged fuel price
+
+$$ ln(\text{distance_traveled}) = \alpha_0 + \alpha_1 ln(\text{fuel_price}_{t-1}) + \alpha_2 \text{country} + \alpha_3 \text{month} +  \epsilon  $$
+
+```{r monthly_distance_model_1.3}
+monthly_distance_model_1.3 = lm(log(distance_traveled) ~ country + month + log(lagged_fuel_price) , data = monthly_effort_by_mmsi)
+```
+
+#### Models summary 
+
+```{r monthly_model_summary, results = 'asis'}
+stargazer::stargazer(monthly_distance_model_1.1, monthly_distance_model_1.2, monthly_distance_model_1.3, 
+                     type = 'html',
+                     omit  = c("country","month"),
+                     ci = TRUE)
+```
+
+#### Comparing elasticity estimates with other published estimates in other sectors
+
+```{r bar_plot}
+intercept = monthly_distance_model_1.1$coefficients[1]
+GFW_elasticity = monthly_distance_model_1.1$coefficients[2]
+
+slopes_1 <- tibble(source = c("Global Fishing Fleet", "Global meta-analysis of gasoline demand", "U.S per capita gasoline consumption (1975-1980)", "U.S per capita gasoline consumption (2001-2006)",  "U.S Trucking sector"),
+                 elasticity = c(GFW_elasticity, Havnarek_elasticity, Hughes_elasticity_past, Hughes_elasticity_recent, Winebreak_elasticity))
+
+limits <- ggplot2::aes(ymax = -0.009, ymin = -0.034)
+
+bar_plot <- ggplot(slopes_1,
+                   aes(x = forcats::fct_reorder(source, elasticity), y = elasticity, fill = source)) +
+  geom_bar(stat = "identity", width = .5) +
+  theme_minimal() +
+  scale_x_discrete(position = "top") +
+  theme(axis.text.x = element_text(angle = 22, hjust = .03),
+        plot.margin = unit(c(0, 1.5, 0.2, .2), "in")) +
+  xlab("") +
+  guides(fill = FALSE) +
+  scale_fill_npg() +
+  geom_errorbar(data = slopes_1 %>% filter(source == "Global Fishing Fleet"),  limits,  stat = "identity", width = 0.25)
+  
+  
+bar_plot
+```
+
+```{r combining_all_plots_v1}
+china_plot <- readRDS("chinese_moratoria_plot")
+
+pp <- ggdraw() +
+  draw_plot(china_plot, 0, .5, 1, .5) +
+  draw_plot(g1, 0, 0, .5, .5) +
+  draw_plot(bar_plot, .5, 0, .5, .5) +
+  draw_plot_label(c("A", "B", "C"), c(0, 0, 0.5), c(1, 0.5, 0.5), size = 12)
+
+save_plot("multi_panel_plot.pdf", pp,
+          ncol = 1, # we're saving a grid plot of 2 columns
+          nrow = 3,
+          base_aspect_ratio = 1:5,
+          base_width = 15
+          )
+```
+
+```{r combining_plots_v2}
+g.iris <- ggplotGrob(china_plot) # convert to gtable
+g.mpg <- g1 # convert to gtable
+
+iris.widths <- g.iris$widths[1:3] # extract the first three widths, 
+                                  # corresponding to left margin, y lab, and y axis
+mpg.widths <- g.mpg$widths[1:3] # same for mpg plot
+max.widths <- unit.pmax(iris.widths, mpg.widths) # calculate maximum widths
+g.iris$widths[1:3] <- max.widths # assign max widths to iris gtable
+g.mpg$widths[1:3] <- max.widths # assign max widths to mpg gtable
+
+bar_plot_rotated <- bar_plot +
+  scale_x_discrete(position = "bottom") +
+  coord_flip()+
+  scale_y_reverse()+
+  ylab("price elasticy of fuel demand")
+
+# plot_grid() can work directly with gtables, so this works
+pp2 <- plot_grid(g.iris, g.mpg, bar_plot_rotated,labels = "AUTO", ncol = 1)
+
+save_plot("plot_3_rows.pdf", pp2,
+          ncol = 1, # we're saving a grid plot of 2 columns
+          nrow = 3,
+          base_aspect_ratio = 1:5,
+          base_width = 10
+          )
+```
+
+
+### 2. Weekly time steps
+
+#### Model specifications:
+
+###### model 2.1: Just log-log:
+
+$$ ln(\text{distance_traveled}) = \alpha_0 + \alpha_1 ln(\text{fuel_price})$$
+
+```{r}
+weekly_distance_model_2.1 = lm(log(distance_traveled) ~ log(fuel_price), data = weekly_effort_by_mmsi)
+```
+
+######  model 1.2: Log-Log without lags:
+
+$$ ln(\text{distance_traveled}) = \alpha_0 + \alpha_1 ln(\text{fuel_price}) + \alpha_2 \text{country} + \alpha_3 \text{month} + \alpha_4\text{new_years} + \epsilon $$
+
+```{r Log-Log_without_lags}
+weekly_distance_model_2.2 = lm(log(distance_traveled) ~ log(fuel_price) + country + month + new_year , data = weekly_effort_by_mmsi)
+```
+
+
+######  model 2.3. Log-Log with lagged fuel price:
+
+$$ ln(\text{distance_traveled}) = \alpha_0 + \alpha_1 ln(\text{fuel_price}_{t-1}) + \alpha_2 \text{country} + \alpha_3 \text{month} + \alpha_4\text{new_years} +  \alpha_5\text{distance_traveled}_{t-1} + \epsilon $$
+
+```{r}
+weekly_distance_model_2.3 = lm(log(distance_traveled) ~ country + month + new_year  + log(lagged_fuel_price) , data = weekly_effort_by_mmsi)
+```
+
+#### Summary of results 
+
+```{r results='asis'}
+stargazer::stargazer(weekly_distance_model_2.1, weekly_distance_model_2.2,  weekly_distance_model_2.3, 
+                     type = 'html',
+                     omit  = c("country","month"),
+                     ci = TRUE)
+```
+
+
+#### Comparing elasticity estimates with other published estimates in other sectors
+```{r fig.cap= "Figure X: Comparison of short-run price elasticity of fuel demand of the global fishing fleet with previous estimates from other sectors. In their meta-analysis, Brons et al, (2008) estimate a short-run price elasticity of gasoline demand of −0.34. Hughes et al, (2008) report a very similar elasticity for the period between 1975 and 1980 (-0.335) but they highlight a sharp decrease to -0.041 in more recent years (2001-2006). More recently, Havnarek et al, (2012) suggest that previous estimates of price elasticites suffer from publication bias and their meta-analysis estimate that after proper correction short-run price elasticity is only -0.09. Lastly, Winebreak et al, (2015) estimate the price elasticity of the U.S combination trucking sector between 1980 and 2012 to be 0.0005 suggesting that this sector is virtually inelastic to changes in fuel price. "}
+intercept = weekly_distance_model_2.1$coefficients[1]
+GFW_elasticity = weekly_distance_model_2.1$coefficients[2]
+
+t <- weekly_effort_by_mmsi %>% 
+  add_predictions(weekly_distance_model_2.1) %>% 
+  mutate(hughes = intercept	+ log(fuel_price)*Hughes_elasticity_recent,
+         havnarek = intercept	+ log(fuel_price)*Havnarek_elasticity,
+         winebreak = intercept	+ log(fuel_price)*Winebreak_elasticity,
+         GFW = pred) %>% 
+  select(fuel_price, hughes, GFW, havnarek, winebreak) %>% 
+  gather(source, predicted_distance, -fuel_price)
+
+p <- ggplot(t) +
+  geom_line(aes(x = log(fuel_price), y = predicted_distance, col = source )) +
+  theme_minimal()+
+  ylab("Log(distance traveled)") +
+  xlab("Log(fuel price)") +
+  scale_colour_discrete(labels = c("GFW", "Havnarek et al, 2012", "Hughes et al , 2008", "Winebreak et al, 2015"))
+
+  
+slopes_2 <- tibble(source = c("Global Fishing Fleet", "Global meta-analysis of gasoline demand", "U.S per capita gasoline consumption (1975-1980)", "U.S per capita gasoline consumption (2001-2006)",  "U.S Trucking sector"),
+                 elasticity = c(GFW_elasticity, Havnarek_elasticity, Hughes_elasticity_past, Hughes_elasticity_recent, Winebreak_elasticity))
+
+limits <- ggplot2::aes(ymax = -0.058, ymin = -0.072)
+
+bar_plot <- ggplot(slopes_2,
+                   aes(x = forcats::fct_reorder(source, elasticity), y = elasticity, fill = source)) +
+  geom_bar(stat = "identity", width = .5) +
+  theme_minimal() +
+  scale_x_discrete(position = "top") +
+  theme(axis.text.x = element_text(angle = 22, hjust = -.05),
+        plot.margin = unit(c(0, 1.5, 0.2, .2), "in")) +
+  xlab("") +
+  guides(fill = FALSE) +
+  scale_fill_npg() +
+  geom_errorbar(data = slopes_2 %>% filter(source == "Global Fishing Fleet"),  limits,  stat = "identity", width = 0.25)
+  
+  
+bar_plot
+```
+
+

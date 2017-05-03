@@ -8,14 +8,18 @@ import subprocess
 
 
 commands = []
-d = datetime(2015,1,1)
+d = datetime(2012,1,1)
 # d = d + timedelta(days=1)
-for i in range(365):
+for i in range(365*3+100):
     # print d + timedelta(days=i)
     yyyymmdd = datetime.strftime(d + timedelta(days=i),"%Y%m%d")
-    command = '''echo python daily_raster_fishing_effort_iso3_geartype_2.py {yyyymmdd}'''.format(yyyymmdd=yyyymmdd)
+    command = '''python Make_Rasters_WLD_201704011.py {yyyymmdd}'''.format(yyyymmdd=yyyymmdd)
     commands.append(command)
 
+
+# all_commands = "("+";".join(commands) +") | parallel -j 8"
+# # print all_commands
+# os.system(all_commands)
 
     
 with open('commands.txt', 'w') as f:
@@ -24,6 +28,3 @@ with open('commands.txt', 'w') as f:
 os.system("parallel -j 16 < commands.txt")
 
 os.system("rm -f commands.txt")
-# all_commands = "("+";".join(commands) +") | parallel -j 16"
-# # print all_commands
-# os.system(all_commands)

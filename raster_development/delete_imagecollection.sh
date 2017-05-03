@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TABLES=$(earthengine ls users/davidk/initial-daily-density-fishing2)
+TABLES=$(earthengine ls projects/globalfishingwatch/WLD)
 
 for T in ${TABLES}; do
     earthengine rm $T;

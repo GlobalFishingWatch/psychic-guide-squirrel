@@ -29,7 +29,7 @@ example usage:
 ee-density-upload.py gs://new-benthos-pipeline/scratch/inital-daily-density/ users/kwurster/initial-daily-density
 
 or
-python ee-density-upload-iso3.py gs://david-scratch/iso3_imagecollections/AFG projects/globalfishingwatch/AFG
+python ee-density-upload-iso3-20170412.py gs://david-scratch/iso3_imagecollections/WLD projects/globalfishingwatch/WLD
 
 
 '''
@@ -151,18 +151,18 @@ def _upload_params(paths, nodata, dst):
 
     for p in paths:
 
-        name = pp.basename(p)
-        print name
+        country_name = pp.dirname(p).split("/")[-1]
+        the_date = pp.basename(p)
         start_time = datetime.date(
-            year=int(name[4:8]),
-            month=int(name[9:11]),
-            day=int(name[12:14]))
+            year=int(the_date[:4]),
+            month=int(the_date[5:7]),
+            day=int(the_date[8:10]))
         end_time = start_time + datetime.timedelta(days=1)
 
         props = {
             'system:time_end': 1000*time.mktime(start_time.timetuple()),
             'system:time_start': 1000*time.mktime(end_time.timetuple()),
-            'country':name[:3],
+            'country':country_name,
             # 'geartype':'trawler'
         }
 
@@ -177,7 +177,7 @@ def _upload_params(paths, nodata, dst):
                     ]
                 }
             ],
-            'id': pp.splitext(pp.join(dst, name))[0],
+            'id': pp.splitext(pp.join(dst, the_date))[0],
             'properties': props
         }
 
@@ -295,19 +295,32 @@ def cli(
     discovered_running = set()
 
     # Filter out images that have already been ingested or are currently running
+    today = datetime.datetime.now()
+
+    
+    # get a list of files that are already ingested into earth engine
+    c = ee.ImageCollection(collection)
+    allready_ingested = set()
+    for f in c.getInfo()['features']:
+        allready_ingested.add(f['id'].split("/")[-1])
+
+
     for t in ee.data.getTaskList():
         if t['task_type'] == 'INGEST':
             o_path = t['description'].lower().split('asset ingestion: ')[1]
             # Image was already successfully ingested
             if t['state'] == 'COMPLETED':
+                created = datetime.datetime.fromtimestamp(t['creation_timestamp_ms']/1000.) 
                 url = urlsplit(t['output_url'][0])
                 o_path = url.query.split('asset=')[1]
                 if pp.dirname(o_path).rstrip('/') == collection:
-                    completed.add(pp.basename(o_path))
+                    # now, if it was created in the last day it might not snow up in the already_ingested
+                    # list, so check if it was created in the last day or in the already_ingested list
+                    if (today-created).days<1 or pp.basename(o_path) in allready_ingested:
+                        completed.add(pp.basename(o_path))   
             # Image is currently being ingested
             elif t['state'] == 'RUNNING':
                 if pp.dirname(o_path).rstrip('/') == collection:
-                    completed.add(pp.basename(o_path))
                     discovered_running.add(t['id'])
 
     inpaths = [

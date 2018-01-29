@@ -26,10 +26,13 @@ import oauth2client.client
 
 '''
 example usage:
-ee-density-upload.py gs://new-benthos-pipeline/scratch/inital-daily-density/ users/kwurster/initial-daily-density
 
-or
 python ee-density-upload-iso3-20170412.py gs://david-scratch/iso3_imagecollections/WLD projects/globalfishingwatch/WLD
+
+The first command is the folder within GCS that the tiffs you want to upload are living. 
+The folder *has* to have a 3 character code for the ISO3 value or the code ("WLD" is for the world)
+
+The second command is the location that the file will get loaded to. 
 
 
 '''
@@ -135,7 +138,7 @@ def _upload_params(paths, nodata, dst):
             'properties': {
                 'system:time_end': 1367366400000,
                 'system:time_start': 1367366400000,
-                'gfw': 'density'
+                'ciountry': 'WLD'
             }
         }
 
@@ -328,6 +331,7 @@ def cli(
     task_ids = []
 
     # All input paths have been ingested
+
     if not inpaths and not discovered_running:
         click.echo("All input images have already been ingested.")
         ctx.exit()
